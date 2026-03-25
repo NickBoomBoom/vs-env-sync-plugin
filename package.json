@@ -1,0 +1,70 @@
+{
+  "name": "vs-env-autoimport-plugin",
+  "displayName": "Env Sync",
+  "description": "Synchronize environment files with a dedicated GitHub repository.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.112.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:envSync.initializeConfigRepo"
+  ],
+  "main": "./dist/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "envSync.initializeConfigRepo",
+        "title": "Env Sync: Initialize Config Repo"
+      }
+    ],
+    "configuration": {
+      "title": "Env Sync",
+      "properties": {
+        "envSync.configRepoUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Private Git repository URL used to store synchronized environment files."
+        },
+        "envSync.configRepoBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "Branch name used in the config repository."
+        },
+        "envSync.pathRegexes": {
+          "type": "array",
+          "default": [
+            "^\\.env[^/]*$"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "JavaScript regular expressions matched against workspace-relative POSIX paths. A file is synced when any regex matches."
+        },
+        "envSync.pathRegex": {
+          "type": "string",
+          "default": "",
+          "markdownDeprecationMessage": "Use `envSync.pathRegexes` instead. This legacy setting is kept as a fallback for older configurations.",
+          "description": "Deprecated legacy single regex fallback."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist .tmp-test-workspace",
+    "test": "npm run build && mocha \"dist/test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.0.0",
+    "@types/vscode": "latest",
+    "mocha": "^11.7.1",
+    "typescript": "^5.8.3"
+  }
+}
