@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import * as vscode from "vscode";
 
 import { ConfigRepoManager } from "./core/configRepoManager";
@@ -15,13 +16,19 @@ import { SerialQueue } from "./core/serialQueue";
 import {
   ConfigRepoSettings,
   DEFAULT_CONFIG_REPO_BRANCH,
-  DEFAULT_PATH_REGEX,
+  DEFAULT_GIT_PROJECT_SEARCH_DEPTH,
   DEFAULT_PATH_REGEXES,
   EXTENSION_NAMESPACE,
   Logger,
   WorkspaceSyncContext
 } from "./core/types";
-import { resolveWorkspaceProject } from "./core/workspaceResolver";
+import { discoverWorkspaceProjects } from "./core/workspaceResolver";
+
+interface SessionSyncSettings {
+  pathRegexSources: string[];
+  pathRegexes: RegExp[];
+  gitProjectSearchDepth: number;
+}
 
 class OutputLogger implements Logger {
   constructor(private readonly outputChannel: vscode.OutputChannel) {}
@@ -74,6 +81,7 @@ class WorkspaceSession implements vscode.Disposable {
   private watcher: vscode.FileSystemWatcher | undefined;
   private debounceHandle: NodeJS.Timeout | undefined;
   private suppressedPaths = new Map<string, number>();
+  private pendingProjectPaths = new Set<string>();
   private syncing = false;
 
   constructor(
@@ -101,8 +109,8 @@ class WorkspaceSession implements vscode.Disposable {
 
   private async syncOnOpen(): Promise<void> {
     await this.queue.enqueue(async () => {
-      const context = await this.resolveContext();
-      if (!context) {
+      const contexts = await this.resolveContexts();
+      if (contexts.length === 0) {
         return;
       }
 
@@ -113,13 +121,15 @@ class WorkspaceSession implements vscode.Disposable {
           return;
         }
 
-        this.logger.info(`Running workspace-open sync for ${context.project.slug}.`);
-        const result = await this.engine.syncOnWorkspaceOpen(settings, context);
-        this.suppressWatcherEvents(result.pulledPaths);
-        if (result.pulledPaths.length > 0) {
-          void vscode.window.showInformationMessage(
-            `Env Sync pulled ${result.pulledPaths.length} file(s) for ${this.folder.name}.`
-          );
+        for (const context of contexts) {
+          this.logger.info(`Running workspace-open sync for ${context.project.slug} (${context.workspaceName}).`);
+          const result = await this.engine.syncOnWorkspaceOpen(settings, context);
+          this.suppressWatcherEvents(context.workspacePath, result.pulledPaths);
+          if (result.pulledPaths.length > 0) {
+            void vscode.window.showInformationMessage(
+              `Env Sync pulled ${result.pulledPaths.length} file(s) for ${context.workspaceName}.`
+            );
+          }
         }
       } catch (error) {
         this.handleError(error, "workspace-open sync");
@@ -130,7 +140,7 @@ class WorkspaceSession implements vscode.Disposable {
   }
 
   private async onWorkspaceFileEvent(uri: vscode.Uri): Promise<void> {
-    const context = await this.resolveContext();
+    const context = await this.resolveContextForUri(uri);
     if (!context) {
       return;
     }
@@ -139,19 +149,16 @@ class WorkspaceSession implements vscode.Disposable {
       return;
     }
 
-    const relativePath = toWorkspaceRelativePath(this.folder.uri.fsPath, uri.fsPath);
+    const relativePath = toWorkspaceRelativePath(context.workspacePath, uri.fsPath);
     if (relativePath.startsWith("..")) {
       return;
     }
 
-    if (!matchesWorkspaceRelativePath(context.pathRegexes, relativePath)) {
+    if (this.isSuppressedAbsolutePath(uri.fsPath)) {
       return;
     }
 
-    if (this.isSuppressed(relativePath)) {
-      return;
-    }
-
+    this.pendingProjectPaths.add(context.workspacePath);
     this.schedulePushSync();
   }
 
@@ -166,8 +173,8 @@ class WorkspaceSession implements vscode.Disposable {
           return;
         }
 
-        const context = await this.resolveContext();
-        if (!context) {
+        const contexts = await this.resolveContexts();
+        if (contexts.length === 0) {
           return;
         }
 
@@ -176,13 +183,24 @@ class WorkspaceSession implements vscode.Disposable {
           return;
         }
 
-        this.logger.info(`Running push sync for ${context.project.slug}.`);
         try {
-          const result = await this.engine.syncLocalChanges(settings, context);
-          if (result.committed) {
-            this.logger.info(
-              `Push sync committed ${result.pushedPaths.length} updated and ${result.deletedPaths.length} deleted file(s).`
-            );
+          const contextsByPath = new Map(contexts.map((context) => [context.workspacePath, context]));
+          const pendingPaths = [...this.pendingProjectPaths];
+          this.pendingProjectPaths.clear();
+
+          for (const projectPath of pendingPaths) {
+            const context = contextsByPath.get(projectPath);
+            if (!context) {
+              continue;
+            }
+
+            this.logger.info(`Running push sync for ${context.project.slug} (${context.workspaceName}).`);
+            const result = await this.engine.syncLocalChanges(settings, context);
+            if (result.committed) {
+              this.logger.info(
+                `Push sync committed ${result.pushedPaths.length} updated and ${result.deletedPaths.length} deleted file(s) for ${context.workspaceName}.`
+              );
+            }
           }
         } catch (error) {
           this.handleError(error, "push sync");
@@ -191,15 +209,16 @@ class WorkspaceSession implements vscode.Disposable {
     }, 3000);
   }
 
-  private suppressWatcherEvents(relativePaths: string[]): void {
+  private suppressWatcherEvents(projectPath: string, relativePaths: string[]): void {
     const expiresAt = Date.now() + 10_000;
     for (const relativePath of relativePaths) {
-      this.suppressedPaths.set(normalizeRelativePath(relativePath), expiresAt);
+      const absolutePath = path.join(projectPath, normalizeRelativePath(relativePath));
+      this.suppressedPaths.set(absolutePath, expiresAt);
     }
   }
 
-  private isSuppressed(relativePath: string): boolean {
-    const normalized = normalizeRelativePath(relativePath);
+  private isSuppressedAbsolutePath(absolutePath: string): boolean {
+    const normalized = path.resolve(absolutePath);
     const expiresAt = this.suppressedPaths.get(normalized);
     if (!expiresAt) {
       return false;
@@ -213,27 +232,88 @@ class WorkspaceSession implements vscode.Disposable {
     return true;
   }
 
-  private async resolveContext(): Promise<WorkspaceSyncContext | undefined> {
+  private async resolveContexts(): Promise<WorkspaceSyncContext[]> {
     if (!vscode.workspace.isTrusted) {
       this.logger.info(`Skipping ${this.folder.name}: workspace is not trusted.`);
-      return undefined;
+      return [];
     }
 
     if (this.folder.uri.scheme !== "file") {
       this.logger.info(`Skipping ${this.folder.name}: only file workspaces are supported.`);
+      return [];
+    }
+
+    const syncSettings = this.getSessionSyncSettings();
+    if (!syncSettings) {
+      return [];
+    }
+
+    const discoveredProjects = await discoverWorkspaceProjects(
+      this.folder.uri.fsPath,
+      this.git,
+      syncSettings.gitProjectSearchDepth
+    );
+    if (discoveredProjects.length === 0) {
+      this.logger.info(`Skipping ${this.folder.name}: no Git projects were found within depth ${syncSettings.gitProjectSearchDepth}.`);
+      return [];
+    }
+
+    return discoveredProjects.map(({ projectPath, project }) => {
+      const relativeProjectPath = normalizeRelativePath(toWorkspaceRelativePath(this.folder.uri.fsPath, projectPath));
+      const ignoredProjectRoots = discoveredProjects
+        .filter(({ projectPath: candidatePath }) => candidatePath !== projectPath && candidatePath.startsWith(`${projectPath}${path.sep}`))
+        .map(({ projectPath: candidatePath }) => normalizeRelativePath(toWorkspaceRelativePath(projectPath, candidatePath)));
+
+      return {
+        workspacePath: projectPath,
+        workspaceName: relativeProjectPath.length > 0 ? relativeProjectPath : this.folder.name,
+        project,
+        pathRegexSources: syncSettings.pathRegexSources,
+        pathRegexes: syncSettings.pathRegexes,
+        ignoredProjectRoots
+      };
+    });
+  }
+
+  private async resolveContextForUri(uri: vscode.Uri): Promise<WorkspaceSyncContext | undefined> {
+    if (uri.scheme !== "file") {
       return undefined;
     }
 
-    const project = await resolveWorkspaceProject(this.folder.uri.fsPath, this.git);
-    if (!project) {
-      this.logger.info(`Skipping ${this.folder.name}: git origin is missing or unsupported.`);
+    const contexts = await this.resolveContexts();
+    if (contexts.length === 0) {
       return undefined;
     }
 
+    const matchingContexts = contexts
+      .filter((context) => {
+        const relativePath = toWorkspaceRelativePath(context.workspacePath, uri.fsPath);
+        return !relativePath.startsWith("..");
+      })
+      .sort((left, right) => right.workspacePath.length - left.workspacePath.length);
+
+    for (const context of matchingContexts) {
+      const relativePath = toWorkspaceRelativePath(context.workspacePath, uri.fsPath);
+      if (!matchesWorkspaceRelativePath(context.pathRegexes, relativePath)) {
+        continue;
+      }
+
+      if (this.isSuppressedAbsolutePath(uri.fsPath)) {
+        return undefined;
+      }
+
+      return context;
+    }
+
+    return undefined;
+  }
+
+  private getSessionSyncSettings(): SessionSyncSettings | undefined {
     const configuration = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE, this.folder.uri);
     const configuredPathRegexes = configuration.get<string[]>("pathRegexes", [...DEFAULT_PATH_REGEXES]);
     const legacyPathRegex = configuration.get<string>("pathRegex", "");
     const pathRegexSources = normalizePathRegexSources(configuredPathRegexes, legacyPathRegex);
+    const configuredDepth = configuration.get<number>("gitProjectSearchDepth", DEFAULT_GIT_PROJECT_SEARCH_DEPTH);
 
     let pathRegexes: RegExp[];
     try {
@@ -253,11 +333,9 @@ class WorkspaceSession implements vscode.Disposable {
     }
 
     return {
-      workspacePath: this.folder.uri.fsPath,
-      workspaceName: this.folder.name,
-      project,
       pathRegexSources,
-      pathRegexes
+      pathRegexes,
+      gitProjectSearchDepth: Number.isFinite(configuredDepth) ? Math.max(0, Math.floor(configuredDepth)) : DEFAULT_GIT_PROJECT_SEARCH_DEPTH
     };
   }
 

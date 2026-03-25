@@ -12,7 +12,11 @@ export async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
-async function walkFiles(rootPath: string, currentRelativePath = ""): Promise<string[]> {
+async function walkFiles(
+  rootPath: string,
+  excludedDirectories: ReadonlySet<string>,
+  currentRelativePath = ""
+): Promise<string[]> {
   const currentPath = currentRelativePath ? path.join(rootPath, currentRelativePath) : rootPath;
   const entries = await fs.readdir(currentPath, { withFileTypes: true });
   const results: string[] = [];
@@ -24,7 +28,11 @@ async function walkFiles(rootPath: string, currentRelativePath = ""): Promise<st
 
     const nextRelativePath = currentRelativePath ? path.posix.join(currentRelativePath, entry.name) : entry.name;
     if (entry.isDirectory()) {
-      results.push(...(await walkFiles(rootPath, nextRelativePath)));
+      if (excludedDirectories.has(normalizeRelativePath(nextRelativePath))) {
+        continue;
+      }
+
+      results.push(...(await walkFiles(rootPath, excludedDirectories, nextRelativePath)));
       continue;
     }
 
@@ -36,13 +44,22 @@ async function walkFiles(rootPath: string, currentRelativePath = ""): Promise<st
   return results;
 }
 
-export async function readMatchingFiles(rootPath: string, pathRegexes: readonly RegExp[]): Promise<Map<string, Buffer>> {
+export async function readMatchingFiles(
+  rootPath: string,
+  pathRegexes: readonly RegExp[],
+  ignoredProjectRoots: readonly string[] = []
+): Promise<Map<string, Buffer>> {
   const files = new Map<string, Buffer>();
   if (!(await pathExists(rootPath))) {
     return files;
   }
 
-  const relativePaths = await walkFiles(rootPath);
+  const excludedDirectories = new Set(
+    ignoredProjectRoots
+      .map((relativePath) => normalizeRelativePath(relativePath))
+      .filter((relativePath) => relativePath.length > 0)
+  );
+  const relativePaths = await walkFiles(rootPath, excludedDirectories);
   for (const relativePath of relativePaths) {
     if (!matchesWorkspaceRelativePath(pathRegexes, relativePath)) {
       continue;

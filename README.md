@@ -7,15 +7,18 @@ Use it when you want a single private repo to back up, share, and restore `.env`
 ## Features
 
 - Configure one existing private Git repository as the env config repository
-- Detect the current project's Git `origin` and map it to a fixed folder in the config repository
+- Recursively discover Git projects inside the current workspace folder
+- Detect each discovered Git project's `origin` and map it to a fixed folder in the config repository
 - Pull matched env files when a workspace opens
 - Commit and push matched env file changes after local edits
 - Prompt instead of silently overwriting when local and remote contents differ
-- Match files with multiple workspace-relative path regexes
+- Match files with multiple Git-project-relative path regexes
 
 ## How It Works
 
-Env Sync reads the current workspace folder's `remote.origin.url` and normalizes it to:
+Env Sync scans the current workspace folder for Git projects up to a configurable depth and reads each discovered project's `remote.origin.url`.
+
+Each Git project is normalized to:
 
 ```text
 github.com/<owner>/<repo>
@@ -50,7 +53,8 @@ projects/github.com/team/app/config/.env.dev
 
 On workspace open:
 
-- Remote exists, local missing: pull remote file into the workspace
+- Search for Git projects under the current workspace folder
+- Remote exists, local missing: pull remote file into that Git project's root
 - Local exists, remote missing: prompt `Upload local` or `Skip`
 - Both exist and are identical: do nothing
 - Both exist and differ: prompt `Pull remote`, `Upload local`, or `Skip`
@@ -62,7 +66,7 @@ On local file change:
 - The config repository is committed and pushed automatically
 - Deletes are mirrored to the config repository too
 
-All sync jobs run through a single serial queue so multiple workspaces do not race on the same config repository clone.
+All sync jobs run through a single serial queue so multiple workspaces or nested projects do not race on the same config repository clone.
 
 ## Requirements
 
@@ -96,7 +100,7 @@ main
 
 ### `envSync.pathRegexes`
 
-An array of JavaScript regex strings matched against workspace-relative POSIX paths. A file is synchronized when any regex matches.
+An array of JavaScript regex strings matched against Git-project-relative POSIX paths. A file is synchronized when any regex matches.
 
 Default:
 
@@ -113,6 +117,24 @@ That default matches only root-level files starting with `.env`, such as:
 - `.env.production.local`
 
 It does not match nested files like `config/.env.local`.
+
+### `envSync.gitProjectSearchDepth`
+
+Controls how many directory levels below the workspace root are searched for Git projects.
+
+Default:
+
+```json
+2
+```
+
+Examples:
+
+- `0`: only check the workspace root itself
+- `1`: check the workspace root and its direct child directories
+- `2`: check the workspace root, children, and grandchildren
+
+If you open a parent folder that contains multiple sibling repositories, this setting controls how deep Env Sync looks for them.
 
 Examples:
 

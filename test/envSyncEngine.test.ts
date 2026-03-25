@@ -50,7 +50,8 @@ function createContext(workspacePath: string): WorkspaceSyncContext {
       slug: "github.com/team/app"
     },
     pathRegexSources: ["^\\.env[^/]*$"],
-    pathRegexes: compilePathRegexes(["^\\.env[^/]*$"])
+    pathRegexes: compilePathRegexes(["^\\.env[^/]*$"]),
+    ignoredProjectRoots: []
   };
 }
 

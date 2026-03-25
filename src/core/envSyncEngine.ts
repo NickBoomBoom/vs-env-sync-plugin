@@ -48,8 +48,8 @@ export class EnvSyncEngine {
 
   private async runOpenSync(repo: ReadyConfigRepo, context: WorkspaceSyncContext): Promise<OpenSyncResult> {
     const remoteRoot = projectStorePath(repo.repoPath, context);
-    const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes);
-    const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes);
+    const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots);
+    const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes, context.ignoredProjectRoots);
     const allPaths = new Set<string>([...localFiles.keys(), ...remoteFiles.keys()]);
 
     const result: OpenSyncResult = {
@@ -115,7 +115,7 @@ export class EnvSyncEngine {
 
   private async runPushSync(repo: ReadyConfigRepo, context: WorkspaceSyncContext): Promise<PushSyncResult> {
     const remoteRoot = projectStorePath(repo.repoPath, context);
-    const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes);
+    const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots);
     const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes);
     const pushedPaths: string[] = [];
     const deletedPaths: string[] = [];

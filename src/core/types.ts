@@ -1,6 +1,7 @@
 export const EXTENSION_NAMESPACE = "envSync";
 export const DEFAULT_PATH_REGEX = "^\\.env[^/]*$";
 export const DEFAULT_PATH_REGEXES = [DEFAULT_PATH_REGEX] as const;
+export const DEFAULT_GIT_PROJECT_SEARCH_DEPTH = 2;
 export const DEFAULT_CONFIG_REPO_BRANCH = "main";
 
 export interface Logger {
@@ -27,6 +28,7 @@ export interface WorkspaceSyncContext {
   project: RepoIdentity;
   pathRegexSources: string[];
   pathRegexes: RegExp[];
+  ignoredProjectRoots: string[];
 }
 
 export interface RemoteFileState {
