@@ -1,0 +1,12 @@
+.git/**
+.github/**
+.vscode/**
+.gitignore
+src/**
+test/**
+*.ts
+tsconfig.json
+package-lock.json
+.tmp-test-workspace/**
+node_modules/.cache/**
+dist/test/**

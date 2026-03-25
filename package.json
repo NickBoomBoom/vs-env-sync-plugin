@@ -1,16 +1,52 @@
 {
-  "name": "vs-env-autoimport-plugin",
+  "name": "vs-env-sync-plugin",
   "displayName": "Env Sync",
-  "description": "Synchronize environment files with a dedicated GitHub repository.",
-  "version": "0.0.1",
-  "publisher": "local",
-  "license": "MIT",
+  "description": "Automatically pull, export, and back up env files for each Git project through a dedicated repository.",
+  "version": "0.1.0",
+  "publisher": "NickBoomBoom",
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "vscode": "^1.112.0"
   },
   "categories": [
+    "SCM Providers",
     "Other"
   ],
+  "keywords": [
+    "env",
+    "dotenv",
+    "environment",
+    "git",
+    "sync",
+    "github",
+    "secrets"
+  ],
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "pricing": "Free",
+  "markdown": "github",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NickBoomBoom/vs-env-sync-plugin.git"
+  },
+  "homepage": "https://github.com/NickBoomBoom/vs-env-sync-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/NickBoomBoom/vs-env-sync-plugin/issues"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
   "activationEvents": [
     "onStartupFinished",
     "onCommand:envSync.initializeConfigRepo"
@@ -56,14 +92,19 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run build",
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist .tmp-test-workspace",
-    "test": "npm run build && mocha \"dist/test/**/*.test.js\""
+    "test": "npm run build && mocha \"dist/test/**/*.test.js\"",
+    "package:vsix": "vsce package",
+    "deploy": "vsce publish"
   },
   "devDependencies": {
+    "@vscode/vsce": "^3.7.1",
     "@types/mocha": "^10.0.10",
     "@types/node": "^24.0.0",
-    "@types/vscode": "latest",
+    "@types/vscode": "1.110.0",
+    "@vscode/vsce": "^3.7.1",
     "mocha": "^11.7.1",
     "typescript": "^5.8.3"
   }
