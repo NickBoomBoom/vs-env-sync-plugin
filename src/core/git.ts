@@ -7,7 +7,14 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 export class GitCommandError extends Error {
-  constructor(message: string, readonly stderr: string, readonly stdout: string, readonly exitCode?: number) {
+  constructor(
+    message: string,
+    readonly stderr: string,
+    readonly stdout: string,
+    readonly exitCode?: number,
+    readonly systemCode?: string,
+    readonly causeMessage?: string
+  ) {
     super(message);
   }
 }
@@ -37,7 +44,9 @@ export class GitCli {
         `git ${args.join(" ")} failed`,
         failed.stderr ?? "",
         failed.stdout ?? "",
-        typeof failed.code === "number" ? failed.code : undefined
+        typeof failed.code === "number" ? failed.code : undefined,
+        typeof failed.code === "string" ? failed.code : undefined,
+        failed.message ?? ""
       );
     }
   }

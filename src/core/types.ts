@@ -2,7 +2,16 @@ export const EXTENSION_NAMESPACE = "envSync";
 export const DEFAULT_PATH_REGEX = "^\\.env[^/]*$";
 export const DEFAULT_PATH_REGEXES = [DEFAULT_PATH_REGEX] as const;
 export const DEFAULT_GIT_PROJECT_SEARCH_DEPTH = 2;
+export const DEFAULT_GIT_PROJECT_IGNORE_DIRECTORIES = [
+  "node_modules",
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+  ".pnpm-store"
+] as const;
 export const DEFAULT_CONFIG_REPO_BRANCH = "main";
+export const DEFAULT_NOTIFICATION_LEVEL = "summary" as const;
 
 export interface Logger {
   info(message: string): void;
@@ -22,6 +31,8 @@ export interface ConfigRepoSettings {
   branch: string;
 }
 
+export type NotificationLevel = "errors" | "summary" | "all";
+
 export interface WorkspaceSyncContext {
   workspacePath: string;
   workspaceName: string;
@@ -40,8 +51,8 @@ export type LocalOnlyDecision = "upload" | "skip";
 export type ConflictDecision = "pull" | "upload" | "skip";
 
 export interface SyncPrompts {
-  chooseLocalOnly(relativePath: string): Promise<LocalOnlyDecision>;
-  chooseConflict(relativePath: string): Promise<ConflictDecision>;
+  chooseLocalOnly(context: WorkspaceSyncContext, relativePath: string): Promise<LocalOnlyDecision>;
+  chooseConflict(context: WorkspaceSyncContext, relativePath: string): Promise<ConflictDecision>;
 }
 
 export interface OpenSyncResult {

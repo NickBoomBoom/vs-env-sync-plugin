@@ -60,4 +60,29 @@ describe("workspaceResolver", () => {
       ]
     );
   });
+
+  it("skips ignored directory names while discovering git projects", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-ignore-"));
+    const workspacePath = path.join(root, "workspace");
+    const activeRepo = path.join(workspacePath, "apps", "repo-one");
+    const ignoredRepo = path.join(workspacePath, "dist", "repo-two");
+    const gitCli = new GitCli();
+
+    await fs.mkdir(workspacePath, { recursive: true });
+    await initRepo(activeRepo, gitCli, "git@github.com:team/repo-one.git");
+    await initRepo(ignoredRepo, gitCli, "git@github.com:team/repo-two.git");
+
+    const discoveredProjects = await discoverWorkspaceProjects(workspacePath, gitCli, 2, ["dist"]);
+    const normalizedWorkspacePath = await fs.realpath(workspacePath);
+
+    assert.deepEqual(
+      discoveredProjects.map((project) => ({
+        projectPath: path.relative(normalizedWorkspacePath, project.projectPath).replace(/\\/g, "/"),
+        slug: project.project.slug
+      })),
+      [
+        { projectPath: "apps/repo-one", slug: "github.com/team/repo-one" }
+      ]
+    );
+  });
 });

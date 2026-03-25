@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { GitCli } from "./git";
 import { parseOriginUrl } from "./repoIdentity";
-import { RepoIdentity } from "./types";
+import { DEFAULT_GIT_PROJECT_IGNORE_DIRECTORIES, RepoIdentity } from "./types";
 
 export interface DiscoveredWorkspaceProject {
   projectPath: string;
@@ -54,9 +54,13 @@ export async function resolveWorkspaceProject(workspacePath: string, git: GitCli
 export async function discoverWorkspaceProjects(
   workspaceRootPath: string,
   git: GitCli,
-  maxDepth: number
+  maxDepth: number,
+  ignoredDirectoryNames: readonly string[] = DEFAULT_GIT_PROJECT_IGNORE_DIRECTORIES
 ): Promise<DiscoveredWorkspaceProject[]> {
   const discoveredProjects = new Map<string, RepoIdentity>();
+  const ignoredDirectoryNameSet = new Set(
+    ignoredDirectoryNames.map((directoryName) => directoryName.trim()).filter((directoryName) => directoryName.length > 0)
+  );
 
   async function walk(currentPath: string, currentDepth: number): Promise<void> {
     if (await pathExists(path.join(currentPath, ".git"))) {
@@ -78,7 +82,7 @@ export async function discoverWorkspaceProjects(
     }
 
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name === ".git" || entry.name === "node_modules") {
+      if (!entry.isDirectory() || entry.name === ".git" || ignoredDirectoryNameSet.has(entry.name)) {
         continue;
       }
 

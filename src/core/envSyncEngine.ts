@@ -71,7 +71,7 @@ export class EnvSyncEngine {
       }
 
       if (localContent && !remoteContent) {
-        const decision = await this.prompts.chooseLocalOnly(relativePath);
+        const decision = await this.prompts.chooseLocalOnly(context, relativePath);
         if (decision === "upload") {
           await writeFileEnsuringDir(remoteTargetPath, localContent);
           result.uploadedPaths.push(relativePath);
@@ -89,7 +89,7 @@ export class EnvSyncEngine {
         continue;
       }
 
-      const decision = await this.prompts.chooseConflict(relativePath);
+      const decision = await this.prompts.chooseConflict(context, relativePath);
       if (decision === "pull") {
         await writeFileEnsuringDir(localTargetPath, remoteContent);
         result.pulledPaths.push(relativePath);

@@ -2,7 +2,7 @@
   "name": "vs-env-sync-plugin",
   "displayName": "Git Project Env Sync",
   "description": "Automatically pull, export, and back up env files for each Git project through a dedicated repository.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "NickBoomBoom",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
@@ -88,6 +88,31 @@
           "minimum": 0,
           "description": "How many directory levels below the workspace root should be searched for Git projects. 0 means only the workspace root."
         },
+        "envSync.gitProjectIgnoreDirectories": {
+          "type": "array",
+          "default": [
+            "node_modules",
+            "dist",
+            "build",
+            ".next",
+            ".turbo",
+            ".pnpm-store"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Directory names skipped while recursively searching for Git projects under the workspace root."
+        },
+        "envSync.notificationLevel": {
+          "type": "string",
+          "enum": [
+            "errors",
+            "summary",
+            "all"
+          ],
+          "default": "summary",
+          "description": "Controls how much Env Sync reports through VS Code notifications. 'errors' only shows failures, 'summary' shows meaningful sync summaries, and 'all' also shows no-op checks."
+        },
         "envSync.pathRegex": {
           "type": "string",
           "default": "",
@@ -110,7 +135,6 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^24.0.0",
     "@types/vscode": "1.110.0",
-    "@vscode/vsce": "^3.7.1",
     "mocha": "^11.7.1",
     "typescript": "^5.8.3"
   }

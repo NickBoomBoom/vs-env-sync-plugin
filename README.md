@@ -13,6 +13,9 @@ Use it when you want a single private repo to back up, share, and restore `.env`
 - Commit and push matched env file changes after local edits
 - Prompt instead of silently overwriting when local and remote contents differ
 - Match files with multiple Git-project-relative path regexes
+- Show current sync state in the VS Code status bar
+- Skip configured directory names while recursively searching for Git projects
+- Classify common Git failures like auth, network, push rejection, and rebase conflicts
 
 ## How It Works
 
@@ -67,6 +70,24 @@ On local file change:
 - Deletes are mirrored to the config repository too
 
 All sync jobs run through a single serial queue so multiple workspaces or nested projects do not race on the same config repository clone.
+
+## Status Bar And Errors
+
+Env Sync adds a status bar item:
+
+- `$(check)`: idle
+- `$(sync~spin)`: a workspace-open or push sync is running
+- `$(error)`: the last sync failed
+
+Click the status bar item to open the `Env Sync` output channel.
+
+Common Git failures are classified into clearer messages, including:
+
+- repository access denied
+- network access failed
+- push rejected by the remote
+- rebase or merge conflict
+- Git executable unavailable
 
 ## Requirements
 
@@ -136,6 +157,41 @@ Examples:
 
 If you open a parent folder that contains multiple sibling repositories, this setting controls how deep Env Sync looks for them.
 
+### `envSync.gitProjectIgnoreDirectories`
+
+Directory names skipped while recursively searching for Git projects under the workspace root.
+
+Default:
+
+```json
+[
+  "node_modules",
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+  ".pnpm-store"
+]
+```
+
+This setting only affects Git project discovery. It is useful when you open a large parent folder and want Env Sync to ignore generated output or package-store directories.
+
+### `envSync.notificationLevel`
+
+Controls how much Env Sync reports through VS Code notifications.
+
+Default:
+
+```json
+"summary"
+```
+
+Available values:
+
+- `errors`: only show error notifications
+- `summary`: show successful sync summaries when files were actually pulled, uploaded, updated, or deleted
+- `all`: also show no-op checks, such as when a project was scanned and nothing needed to change
+
 Examples:
 
 Sync only root `.env*` files:
@@ -155,6 +211,11 @@ Sync root `.env*` files and `config/.env*` files:
   "envSync.pathRegexes": [
     "^\\.env[^/]*$",
     "^config/\\.env[^/]*$"
+  ],
+  "envSync.gitProjectIgnoreDirectories": [
+    "node_modules",
+    "dist",
+    "coverage"
   ]
 }
 ```
