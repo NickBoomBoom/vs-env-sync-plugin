@@ -1,6 +1,6 @@
 {
   "name": "vs-env-sync-plugin",
-  "displayName": "Env Sync",
+  "displayName": "Git Project Env Sync",
   "description": "Automatically pull, export, and back up env files for each Git project through a dedicated repository.",
   "version": "0.1.0",
   "publisher": "NickBoomBoom",
