@@ -58,9 +58,9 @@ On workspace open:
 
 - Search for Git projects under the current workspace folder
 - Remote exists, local missing: pull remote file into that Git project's root
-- Local exists, remote missing: prompt `Upload local` or `Skip`
+- Local exists, remote missing: prompt `上传本地文件` or `跳过`
 - Both exist and are identical: do nothing
-- Both exist and differ: prompt `Pull remote`, `Upload local`, or `Skip`
+- Both exist and differ: prompt `拉取远端文件`, `上传本地文件`, or `跳过`
 
 On local file change:
 
@@ -248,12 +248,12 @@ Deprecated single-regex fallback. New setups should use `envSync.pathRegexes`.
 
 ## Command
 
-### `Env Sync: Initialize Config Repo`
+### `Env Sync：初始化配置仓库`
 
 Prompts for:
 
-- Config Repo URL
-- Config Repo Branch
+- 配置仓库 URL
+- 配置仓库分支
 
 The extension validates the repository with `git ls-remote` before saving the configuration.
 
@@ -408,7 +408,7 @@ Example settings:
 
 Open the test project in the extension host, initialize the config repo, and validate:
 
-- First upload prompt
+- First `上传本地文件` prompt
 - Automatic push after save
 - Delete propagation
 - Pull on reopen or reload

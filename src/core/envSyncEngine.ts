@@ -107,7 +107,7 @@ export class EnvSyncEngine {
 
     if (result.uploadedPaths.length > 0) {
       const committed = await this.configRepoManager.commitProjectChanges(repo, remoteRoot, commitMessage(context));
-      this.logger.info(`Workspace open sync uploaded ${result.uploadedPaths.length} file(s); committed=${committed}.`);
+      this.logger.info(`打开工作区同步已上传 ${result.uploadedPaths.length} 个文件；已提交：${committed ? "是" : "否"}。`);
     }
 
     return result;

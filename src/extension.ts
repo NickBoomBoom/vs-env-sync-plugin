@@ -62,23 +62,23 @@ class StatusBarController implements vscode.Disposable {
     this.item.show();
   }
 
-  showReady(detail = "Env Sync is idle."): void {
+  showReady(detail = "Env Sync 空闲中。"): void {
     this.item.text = "$(check)";
-    this.item.tooltip = `${detail}\nClick to open Env Sync output.`;
+    this.item.tooltip = `${detail}\n点击打开 Env Sync 输出。`;
     this.item.backgroundColor = undefined;
     this.item.show();
   }
 
   showSyncing(detail: string): void {
     this.item.text = "$(sync~spin)";
-    this.item.tooltip = `${detail}\nClick to open Env Sync output.`;
+    this.item.tooltip = `${detail}\n点击打开 Env Sync 输出。`;
     this.item.backgroundColor = undefined;
     this.item.show();
   }
 
   showError(detail: string): void {
     this.item.text = "$(error)";
-    this.item.tooltip = `${detail}\nClick to open Env Sync output.`;
+    this.item.tooltip = `${detail}\n点击打开 Env Sync 输出。`;
     this.item.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
     this.item.show();
   }
@@ -100,46 +100,46 @@ function summarizePaths(paths: readonly string[], limit = 3): string {
   const visiblePaths = paths.slice(0, limit);
   const remaining = paths.length - visiblePaths.length;
   const summary = visiblePaths.join(", ");
-  return remaining > 0 ? `${summary}, +${remaining} more` : summary;
+  return remaining > 0 ? `${summary}，另有 ${remaining} 个` : summary;
 }
 
 function buildSyncSummary(result: { pushedPaths: string[]; deletedPaths: string[] }): string {
   const parts: string[] = [];
   if (result.pushedPaths.length > 0) {
-    parts.push(`updated ${summarizePaths(result.pushedPaths)}`);
+    parts.push(`已更新 ${summarizePaths(result.pushedPaths)}`);
   }
   if (result.deletedPaths.length > 0) {
-    parts.push(`deleted ${summarizePaths(result.deletedPaths)}`);
+    parts.push(`已删除 ${summarizePaths(result.deletedPaths)}`);
   }
-  return parts.join("; ");
+  return parts.join("；");
 }
 
 class VscodePrompts {
   async chooseLocalOnly(context: WorkspaceSyncContext, relativePath: string): Promise<"upload" | "skip"> {
     const projectLabel = formatProjectLabel(context);
     const decision = await vscode.window.showWarningMessage(
-      `Env Sync: remote is missing ${relativePath} for ${projectLabel}.`,
+      `Env Sync：${projectLabel} 的远端缺少 ${relativePath}。`,
       { modal: false },
-      "Upload local",
-      "Skip"
+      "上传本地文件",
+      "跳过"
     );
-    return decision === "Upload local" ? "upload" : "skip";
+    return decision === "上传本地文件" ? "upload" : "skip";
   }
 
   async chooseConflict(context: WorkspaceSyncContext, relativePath: string): Promise<"pull" | "upload" | "skip"> {
     const projectLabel = formatProjectLabel(context);
     const decision = await vscode.window.showWarningMessage(
-      `Env Sync: conflict detected for ${relativePath} in ${projectLabel}.`,
+      `Env Sync：${projectLabel} 中的 ${relativePath} 存在冲突。`,
       { modal: false },
-      "Pull remote",
-      "Upload local",
-      "Skip"
+      "拉取远端文件",
+      "上传本地文件",
+      "跳过"
     );
-    if (decision === "Pull remote") {
+    if (decision === "拉取远端文件") {
       return "pull";
     }
 
-    if (decision === "Upload local") {
+    if (decision === "上传本地文件") {
       return "upload";
     }
 
@@ -214,39 +214,39 @@ class WorkspaceSession implements vscode.Disposable {
         }
 
         for (const context of contexts) {
-          this.statusBar.showSyncing(`Opening sync for ${formatProjectLabel(context)}.`);
-          this.logger.info(`Running workspace-open sync for ${context.project.slug} (${context.workspaceName}).`);
+          this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 执行打开工作区同步。`);
+          this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行打开工作区同步。`);
           const result = await this.engine.syncOnWorkspaceOpen(settings, context);
           this.suppressWatcherEvents(context.workspacePath, result.pulledPaths);
           const syncSummaryParts: string[] = [];
           if (result.pulledPaths.length > 0) {
-            syncSummaryParts.push(`pulled ${summarizePaths(result.pulledPaths)}`);
+            syncSummaryParts.push(`已拉取 ${summarizePaths(result.pulledPaths)}`);
           }
           if (result.uploadedPaths.length > 0) {
-            syncSummaryParts.push(`uploaded ${summarizePaths(result.uploadedPaths)}`);
+            syncSummaryParts.push(`已上传 ${summarizePaths(result.uploadedPaths)}`);
           }
 
           if (syncSummaryParts.length > 0) {
             this.showInfoNotification(
               syncSettings.notificationLevel,
-              `Env Sync synchronized ${formatProjectLabel(context)}: ${syncSummaryParts.join("; ")}.`,
+              `Env Sync 已同步 ${formatProjectLabel(context)}：${syncSummaryParts.join("；")}。`,
               true
             );
           } else {
             this.showInfoNotification(
               syncSettings.notificationLevel,
-              `Env Sync checked ${formatProjectLabel(context)}: no changes were needed.`,
+              `Env Sync 已检查 ${formatProjectLabel(context)}：无需变更。`,
               false
             );
           }
         }
         completedSuccessfully = true;
       } catch (error) {
-        this.handleError(error, "workspace-open sync");
+        this.handleError(error, "打开工作区同步");
       } finally {
         this.syncing = false;
         if (completedSuccessfully) {
-          this.statusBar.showReady("Workspace-open sync completed.");
+          this.statusBar.showReady("打开工作区同步已完成。");
         }
       }
     });
@@ -313,34 +313,34 @@ class WorkspaceSession implements vscode.Disposable {
               continue;
             }
 
-            this.statusBar.showSyncing(`Pushing env changes for ${formatProjectLabel(context)}.`);
-            this.logger.info(`Running push sync for ${context.project.slug} (${context.workspaceName}).`);
+            this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 推送 env 变更。`);
+            this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行推送同步。`);
             const result = await this.engine.syncLocalChanges(settings, context);
             if (result.committed) {
               this.logger.info(
-                `Push sync committed ${result.pushedPaths.length} updated and ${result.deletedPaths.length} deleted file(s) for ${context.workspaceName}.`
+                `推送同步已为 ${context.workspaceName} 提交 ${result.pushedPaths.length} 个更新文件和 ${result.deletedPaths.length} 个删除文件。`
               );
               const summary = buildSyncSummary(result);
               this.showInfoNotification(
                 syncSettings.notificationLevel,
-                `Env Sync synchronized ${formatProjectLabel(context)}: ${summary}.`,
+                `Env Sync 已同步 ${formatProjectLabel(context)}：${summary}。`,
                 true
               );
             } else {
               this.showInfoNotification(
                 syncSettings.notificationLevel,
-                `Env Sync checked ${formatProjectLabel(context)}: no changes were needed.`,
+                `Env Sync 已检查 ${formatProjectLabel(context)}：无需变更。`,
                 false
               );
             }
           }
           completedSuccessfully = true;
         } catch (error) {
-          this.handleError(error, "push sync");
+          this.handleError(error, "推送同步");
         } finally {
           this.syncing = false;
           if (completedSuccessfully) {
-            this.statusBar.showReady("Push sync completed.");
+            this.statusBar.showReady("推送同步已完成。");
           }
         }
       });
@@ -372,12 +372,12 @@ class WorkspaceSession implements vscode.Disposable {
 
   private async resolveContexts(): Promise<WorkspaceSyncContext[]> {
     if (!vscode.workspace.isTrusted) {
-      this.logger.info(`Skipping ${this.folder.name}: workspace is not trusted.`);
+      this.logger.info(`已跳过 ${this.folder.name}：工作区不受信任。`);
       return [];
     }
 
     if (this.folder.uri.scheme !== "file") {
-      this.logger.info(`Skipping ${this.folder.name}: only file workspaces are supported.`);
+      this.logger.info(`已跳过 ${this.folder.name}：仅支持文件工作区。`);
       return [];
     }
 
@@ -408,7 +408,7 @@ class WorkspaceSession implements vscode.Disposable {
       );
       if (discoveredProjects.length === 0) {
         this.logger.info(
-          `Skipping ${this.folder.name}: no Git projects were found within depth ${syncSettings.gitProjectSearchDepth}.`
+          `已跳过 ${this.folder.name}：在深度 ${syncSettings.gitProjectSearchDepth} 内未找到 Git 项目。`
         );
         return [];
       }
@@ -496,9 +496,9 @@ class WorkspaceSession implements vscode.Disposable {
     try {
       pathRegexes = compilePathRegexes(pathRegexSources);
     } catch (error) {
-      const message = `Invalid envSync.pathRegexes for ${this.folder.name}: ${(error as Error).message}`;
+      const message = `${this.folder.name} 的 envSync.pathRegexes 无效：${(error as Error).message}`;
       this.logger.error(message);
-      this.statusBar.showError(`Invalid path regex configuration for ${this.folder.name}.`);
+      this.statusBar.showError(`${this.folder.name} 的路径正则配置无效。`);
       void vscode.window.showErrorMessage(message);
       return undefined;
     }
@@ -507,7 +507,7 @@ class WorkspaceSession implements vscode.Disposable {
       configuredPathRegexes.length === 0 &&
       legacyPathRegex.trim().length > 0
     ) {
-      this.logger.warn(`Using deprecated envSync.pathRegex fallback for ${this.folder.name}.`);
+      this.logger.warn(`正在为 ${this.folder.name} 使用已弃用的 envSync.pathRegex 兜底配置。`);
     }
 
     const gitProjectIgnoreDirectories = configuredIgnoredDirectories
@@ -547,7 +547,7 @@ class WorkspaceSession implements vscode.Disposable {
     const branch = configuration.get<string>("configRepoBranch", DEFAULT_CONFIG_REPO_BRANCH).trim();
 
     if (!repoUrl) {
-      this.logger.info("Skipping sync: envSync.configRepoUrl is not configured.");
+      this.logger.info("已跳过同步：未配置 envSync.configRepoUrl。");
       return undefined;
     }
 
@@ -607,7 +607,7 @@ class WorkspaceCoordinator implements vscode.Disposable {
 
   async refreshSessions(): Promise<void> {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    this.statusBar.showReady("Env Sync is ready.");
+    this.statusBar.showReady("Env Sync 已就绪。");
 
     for (const session of this.sessions.values()) {
       session.dispose();
@@ -622,7 +622,7 @@ class WorkspaceCoordinator implements vscode.Disposable {
     }
 
     if (folders.length === 0) {
-      this.statusBar.showReady("No workspace folders are open.");
+      this.statusBar.showReady("当前未打开工作区文件夹。");
     }
   }
 }
@@ -652,12 +652,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const defaultBranch = currentConfiguration.get<string>("configRepoBranch", DEFAULT_CONFIG_REPO_BRANCH);
 
     const repoUrl = await vscode.window.showInputBox({
-      title: "Env Sync: Config Repo URL",
-      prompt: "Enter the private Git repository URL used to store synchronized env files.",
+      title: "Env Sync：配置仓库 URL",
+      prompt: "请输入用于存储同步 env 文件的私有 Git 仓库 URL。",
       value: defaultRepoUrl,
       ignoreFocusOut: true,
       validateInput(value) {
-        return value.trim().length === 0 ? "Repository URL is required." : undefined;
+        return value.trim().length === 0 ? "必须填写仓库 URL。" : undefined;
       }
     });
     if (!repoUrl) {
@@ -665,12 +665,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     const branch = await vscode.window.showInputBox({
-      title: "Env Sync: Config Repo Branch",
-      prompt: "Enter the branch to use in the config repository.",
+      title: "Env Sync：配置仓库分支",
+      prompt: "请输入配置仓库使用的分支。",
       value: defaultBranch,
       ignoreFocusOut: true,
       validateInput(value) {
-        return value.trim().length === 0 ? "Branch name is required." : undefined;
+        return value.trim().length === 0 ? "必须填写分支名称。" : undefined;
       }
     });
     if (!branch) {
@@ -686,11 +686,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await engine.verifyConfigRepo(settings);
       await currentConfiguration.update("configRepoUrl", settings.repoUrl, vscode.ConfigurationTarget.Global);
       await currentConfiguration.update("configRepoBranch", settings.branch, vscode.ConfigurationTarget.Global);
-      void vscode.window.showInformationMessage("Env Sync config repository saved.");
-      logger.info(`Configured repo ${settings.repoUrl} on branch ${settings.branch}.`);
+      void vscode.window.showInformationMessage("Env Sync 配置仓库已保存。");
+      logger.info(`已配置仓库 ${settings.repoUrl}，分支 ${settings.branch}。`);
       await coordinator.refreshSessions();
     } catch (error) {
-      const summary = summarizeSyncError(error, "config repo verification");
+      const summary = summarizeSyncError(error, "配置仓库校验");
       logger.error(summary.logMessage);
       statusBar.showError(summary.statusMessage);
       void vscode.window.showErrorMessage(summary.notificationMessage);

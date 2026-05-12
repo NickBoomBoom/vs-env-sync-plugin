@@ -11,11 +11,11 @@ describe("errorSummary", () => {
         "git@github.com: Permission denied (publickey).",
         ""
       ),
-      "push sync"
+      "推送同步"
     );
 
-    assert.equal(summary.statusMessage, "Repository access denied");
-    assert.match(summary.notificationMessage, /repository access was denied/i);
+    assert.equal(summary.statusMessage, "仓库访问被拒绝");
+    assert.match(summary.notificationMessage, /仓库访问被拒绝/);
   });
 
   it("classifies network failures", () => {
@@ -25,11 +25,11 @@ describe("errorSummary", () => {
         "fatal: unable to access 'https://github.com/team/repo.git/': Could not resolve host: github.com",
         ""
       ),
-      "workspace-open sync"
+      "打开工作区同步"
     );
 
-    assert.equal(summary.statusMessage, "Network access failed");
-    assert.match(summary.notificationMessage, /network access/i);
+    assert.equal(summary.statusMessage, "网络访问失败");
+    assert.match(summary.notificationMessage, /无法通过网络访问 Git 远端/);
   });
 
   it("classifies push rejections", () => {
@@ -39,20 +39,20 @@ describe("errorSummary", () => {
         " ! [rejected] main -> main (fetch first)\nerror: failed to push some refs",
         ""
       ),
-      "push sync"
+      "推送同步"
     );
 
-    assert.equal(summary.statusMessage, "Push was rejected");
-    assert.match(summary.notificationMessage, /rejected the push/i);
+    assert.equal(summary.statusMessage, "推送被拒绝");
+    assert.match(summary.notificationMessage, /配置仓库拒绝了推送/);
   });
 
   it("classifies git executable lookup failures", () => {
     const summary = summarizeSyncError(
       new GitCommandError("git push failed", "", "", undefined, "ENOENT", "spawn git ENOENT"),
-      "push sync"
+      "推送同步"
     );
 
-    assert.equal(summary.statusMessage, "Git is unavailable");
-    assert.match(summary.notificationMessage, /git is not available/i);
+    assert.equal(summary.statusMessage, "Git 不可用");
+    assert.match(summary.notificationMessage, /无法使用 git/);
   });
 });

@@ -20,9 +20,9 @@ function classifyGitError(error: GitCommandError, phase: string): SyncErrorSumma
 
   if (error.systemCode === "ENOENT" || normalizedDetails.includes("spawn git enoent")) {
     return {
-      logMessage: `${phase} failed: ${details}`,
-      notificationMessage: `Env Sync ${phase} failed: git is not available in the extension host environment.`,
-      statusMessage: "Git is unavailable"
+      logMessage: `${phase}失败：${details}`,
+      notificationMessage: `Env Sync ${phase}失败：扩展宿主环境中无法使用 git。`,
+      statusMessage: "Git 不可用"
     };
   }
 
@@ -38,9 +38,9 @@ function classifyGitError(error: GitCommandError, phase: string): SyncErrorSumma
     ])
   ) {
     return {
-      logMessage: `${phase} failed: ${details}`,
-      notificationMessage: `Env Sync ${phase} failed: repository access was denied. Check credentials and the configured remote URL.`,
-      statusMessage: "Repository access denied"
+      logMessage: `${phase}失败：${details}`,
+      notificationMessage: `Env Sync ${phase}失败：仓库访问被拒绝。请检查凭据和已配置的远端 URL。`,
+      statusMessage: "仓库访问被拒绝"
     };
   }
 
@@ -57,9 +57,9 @@ function classifyGitError(error: GitCommandError, phase: string): SyncErrorSumma
     ])
   ) {
     return {
-      logMessage: `${phase} failed: ${details}`,
-      notificationMessage: `Env Sync ${phase} failed: network access to the Git remote is unavailable.`,
-      statusMessage: "Network access failed"
+      logMessage: `${phase}失败：${details}`,
+      notificationMessage: `Env Sync ${phase}失败：无法通过网络访问 Git 远端。`,
+      statusMessage: "网络访问失败"
     };
   }
 
@@ -73,9 +73,9 @@ function classifyGitError(error: GitCommandError, phase: string): SyncErrorSumma
     ])
   ) {
     return {
-      logMessage: `${phase} failed: ${details}`,
-      notificationMessage: `Env Sync ${phase} failed: the config repository rejected the push. Pull the latest changes or resolve remote updates first.`,
-      statusMessage: "Push was rejected"
+      logMessage: `${phase}失败：${details}`,
+      notificationMessage: `Env Sync ${phase}失败：配置仓库拒绝了推送。请先拉取最新变更或处理远端更新。`,
+      statusMessage: "推送被拒绝"
     };
   }
 
@@ -88,24 +88,24 @@ function classifyGitError(error: GitCommandError, phase: string): SyncErrorSumma
     ])
   ) {
     return {
-      logMessage: `${phase} failed: ${details}`,
-      notificationMessage: `Env Sync ${phase} failed: the config repository has a rebase or merge conflict that needs manual resolution.`,
-      statusMessage: "Rebase conflict"
+      logMessage: `${phase}失败：${details}`,
+      notificationMessage: `Env Sync ${phase}失败：配置仓库存在需要手动处理的 rebase 或 merge 冲突。`,
+      statusMessage: "存在 rebase 冲突"
     };
   }
 
   if (normalizedDetails.includes("not a git repository")) {
     return {
-      logMessage: `${phase} failed: ${details}`,
-      notificationMessage: `Env Sync ${phase} failed: the target folder is not a Git repository anymore.`,
-      statusMessage: "Git repository not found"
+      logMessage: `${phase}失败：${details}`,
+      notificationMessage: `Env Sync ${phase}失败：目标文件夹已不是 Git 仓库。`,
+      statusMessage: "未找到 Git 仓库"
     };
   }
 
   return {
-    logMessage: `${phase} failed: ${details}`,
-    notificationMessage: `Env Sync ${phase} failed. Check the "Env Sync" output for details.`,
-    statusMessage: `${phase} failed`
+    logMessage: `${phase}失败：${details}`,
+    notificationMessage: `Env Sync ${phase}失败。请查看“Env Sync”输出了解详情。`,
+    statusMessage: `${phase}失败`
   };
 }
 
@@ -116,15 +116,15 @@ export function summarizeSyncError(error: unknown, phase: string): SyncErrorSumm
 
   if (error instanceof Error) {
     return {
-      logMessage: `${phase} failed: ${error.message}`,
-      notificationMessage: `Env Sync ${phase} failed: ${error.message}`,
-      statusMessage: `${phase} failed`
+      logMessage: `${phase}失败：${error.message}`,
+      notificationMessage: `Env Sync ${phase}失败：${error.message}`,
+      statusMessage: `${phase}失败`
     };
   }
 
   return {
-    logMessage: `${phase} failed with an unknown error.`,
-    notificationMessage: `Env Sync ${phase} failed. Check the "Env Sync" output for details.`,
-    statusMessage: `${phase} failed`
+    logMessage: `${phase}失败，原因未知。`,
+    notificationMessage: `Env Sync ${phase}失败。请查看“Env Sync”输出了解详情。`,
+    statusMessage: `${phase}失败`
   };
 }

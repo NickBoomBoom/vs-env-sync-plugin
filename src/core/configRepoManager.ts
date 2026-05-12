@@ -38,7 +38,7 @@ export class ConfigRepoManager {
       return;
     }
 
-    this.logger.info(`Remote branch ${repo.branch} does not exist yet. Skipping pull.`);
+    this.logger.info(`远端分支 ${repo.branch} 暂不存在，已跳过拉取。`);
   }
 
   async commitProjectChanges(repo: ReadyConfigRepo, projectStorePath: string, message: string): Promise<boolean> {

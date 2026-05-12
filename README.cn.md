@@ -60,9 +60,9 @@ projects/github.com/team/app/config/.env.dev
 
 - 在当前工作区下搜索 Git 项目
 - 远端存在、本地缺失：把远端文件拉到对应 Git 项目根目录
-- 本地存在、远端缺失：提示 `Upload local` 或 `Skip`
+- 本地存在、远端缺失：提示 `上传本地文件` 或 `跳过`
 - 两边都存在且内容一致：不处理
-- 两边都存在但内容不同：提示 `Pull remote`、`Upload local` 或 `Skip`
+- 两边都存在但内容不同：提示 `拉取远端文件`、`上传本地文件` 或 `跳过`
 
 本地文件变化时：
 
@@ -250,7 +250,7 @@ main
 
 ## 命令
 
-### `Env Sync: Initialize Config Repo`
+### `Env Sync：初始化配置仓库`
 
 会依次提示输入：
 

@@ -1,7 +1,7 @@
 {
   "name": "vs-env-sync-plugin",
-  "displayName": "Git Project Env Sync",
-  "description": "Automatically pull, export, and back up env files for each Git project through a dedicated repository.",
+  "displayName": "Git 项目 Env 同步",
+  "description": "通过专用仓库自动拉取、导出并备份每个 Git 项目的 env 文件。",
   "version": "0.1.2",
   "publisher": "NickBoomBoom",
   "license": "SEE LICENSE IN LICENSE",
@@ -56,7 +56,7 @@
     "commands": [
       {
         "command": "envSync.initializeConfigRepo",
-        "title": "Env Sync: Initialize Config Repo"
+        "title": "Env Sync：初始化配置仓库"
       }
     ],
     "configuration": {
@@ -65,12 +65,12 @@
         "envSync.configRepoUrl": {
           "type": "string",
           "default": "",
-          "description": "Private Git repository URL used to store synchronized environment files."
+          "description": "用于存储同步环境文件的私有 Git 仓库 URL。"
         },
         "envSync.configRepoBranch": {
           "type": "string",
           "default": "main",
-          "description": "Branch name used in the config repository."
+          "description": "配置仓库使用的分支名称。"
         },
         "envSync.pathRegexes": {
           "type": "array",
@@ -80,13 +80,13 @@
           "items": {
             "type": "string"
           },
-          "description": "JavaScript regular expressions matched against Git-project-relative POSIX paths. A file is synced when any regex matches."
+          "description": "用于匹配 Git 项目相对 POSIX 路径的 JavaScript 正则表达式。任意正则匹配时，该文件会被同步。"
         },
         "envSync.gitProjectSearchDepth": {
           "type": "number",
           "default": 2,
           "minimum": 0,
-          "description": "How many directory levels below the workspace root should be searched for Git projects. 0 means only the workspace root."
+          "description": "在工作区根目录下搜索 Git 项目的目录层级。0 表示仅搜索工作区根目录。"
         },
         "envSync.gitProjectIgnoreDirectories": {
           "type": "array",
@@ -101,7 +101,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Directory names skipped while recursively searching for Git projects under the workspace root."
+          "description": "在工作区根目录下递归搜索 Git 项目时要跳过的目录名称。"
         },
         "envSync.notificationLevel": {
           "type": "string",
@@ -111,13 +111,13 @@
             "all"
           ],
           "default": "summary",
-          "description": "Controls how much Env Sync reports through VS Code notifications. 'errors' only shows failures, 'summary' shows meaningful sync summaries, and 'all' also shows no-op checks."
+          "description": "控制 Env Sync 通过 VS Code 通知报告的详细程度。'errors' 仅显示失败，'summary' 显示有意义的同步摘要，'all' 还会显示无变更检查。"
         },
         "envSync.pathRegex": {
           "type": "string",
           "default": "",
-          "markdownDeprecationMessage": "Use `envSync.pathRegexes` instead. This legacy setting is kept as a fallback for older configurations.",
-          "description": "Deprecated legacy single regex fallback."
+          "markdownDeprecationMessage": "请改用 `envSync.pathRegexes`。此旧设置仅作为旧版配置的兜底项保留。",
+          "description": "已弃用的旧版单个正则兜底配置。"
         }
       }
     }
