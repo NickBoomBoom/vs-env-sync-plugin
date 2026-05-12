@@ -100,6 +100,10 @@ describe("git integration", () => {
     });
     assert.equal(await fs.readFile(path.join(workspacePath, ".env.local"), "utf8"), "REMOTE=1\n");
 
+    const readyConfigRepo = await manager.ensureReady(settings);
+    await git(gitCli, readyConfigRepo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, readyConfigRepo.repoPath, "config", "user.name", "Test User");
+
     await fs.writeFile(path.join(workspacePath, ".env.local"), "REMOTE=2\n");
     const pushResult = await engine.syncLocalChanges(settings, createContext(workspacePath));
     assert.deepEqual(pushResult, {

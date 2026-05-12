@@ -2,7 +2,7 @@
   "name": "vs-env-sync-plugin",
   "displayName": "Git 项目 Env 同步",
   "description": "通过专用仓库自动拉取、导出并备份每个 Git 项目的 env 文件。",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "NickBoomBoom",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
