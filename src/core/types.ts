@@ -36,6 +36,7 @@ export type NotificationLevel = "errors" | "summary" | "all";
 export interface WorkspaceSyncContext {
   workspacePath: string;
   workspaceName: string;
+  branch: string;
   project: RepoIdentity;
   pathRegexSources: string[];
   pathRegexes: RegExp[];

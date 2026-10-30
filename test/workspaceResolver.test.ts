@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { GitCli } from "../src/core/git";
-import { discoverWorkspaceProjects, resolveWorkspaceProject } from "../src/core/workspaceResolver";
+import { discoverWorkspaceProjects, resolveWorkspaceBranch, resolveWorkspaceProject } from "../src/core/workspaceResolver";
 
 async function git(gitCli: GitCli, cwd: string, ...args: string[]): Promise<string> {
   return gitCli.run(args, { cwd });
@@ -31,6 +31,43 @@ describe("workspaceResolver", () => {
 
     assert.equal(rootProject?.slug, "github.com/team/app");
     assert.equal(nestedProject, undefined);
+  });
+
+  it("resolves the current branch and returns undefined for detached HEAD", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-branch-"));
+    const repoPath = path.join(root, "repo");
+    const gitCli = new GitCli();
+
+    await initRepo(repoPath, gitCli, "git@github.com:team/app.git");
+    await git(gitCli, repoPath, "checkout", "-b", "feature/login");
+    assert.equal(await resolveWorkspaceBranch(repoPath, gitCli), "feature/login");
+
+    await git(
+      gitCli,
+      repoPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "initial"
+    );
+    await git(gitCli, repoPath, "checkout", "--detach");
+    assert.equal(await resolveWorkspaceBranch(repoPath, gitCli), undefined);
+  });
+
+  it("includes the current branch in discovered projects", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-discover-branch-"));
+    const repoPath = path.join(root, "repo");
+    const gitCli = new GitCli();
+
+    await initRepo(repoPath, gitCli, "git@github.com:team/app.git");
+    await git(gitCli, repoPath, "checkout", "-b", "feature/login");
+
+    const discoveredProjects = await discoverWorkspaceProjects(root, gitCli, 1);
+    assert.deepEqual(discoveredProjects.map((project) => project.branch), ["feature/login"]);
   });
 
   it("discovers git projects within the configured search depth", async () => {

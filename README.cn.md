@@ -10,7 +10,7 @@ Env Sync 用于把每个 Git 项目中命中的环境变量文件，同步到一
 
 - 配置一个已有的私有 Git 仓库作为环境变量配置仓库
 - 递归发现当前工作区中的 Git 项目
-- 自动读取每个 Git 项目的 `origin`，映射到配置仓库中的固定目录
+- 自动读取每个 Git 项目的 `origin` 和当前分支，映射到配置仓库中的分支独立目录
 - 打开工作区时自动拉取匹配的 env 文件
 - 本地 env 文件变更后自动提交并推送到配置仓库
 - 本地与远端内容冲突时提示用户选择，不静默覆盖
@@ -21,7 +21,7 @@ Env Sync 用于把每个 Git 项目中命中的环境变量文件，同步到一
 
 ## 工作原理
 
-Env Sync 会在当前工作区目录下，按可配置的最大深度递归查找 Git 项目，并读取每个项目的 `remote.origin.url`。
+Env Sync 会在当前工作区目录下，按可配置的最大深度递归查找 Git 项目，并读取每个项目的 `remote.origin.url` 和当前分支。
 
 每个 Git 项目都会被归一化成：
 
@@ -41,24 +41,27 @@ github.com/<owner>/<repo>
 github.com/team/app
 ```
 
-在配置仓库中，文件会存储到：
+在配置仓库中，当前分支的文件会存储到：
 
 ```text
-projects/<host>/<owner>/<repo>/
+projects/<host>/<owner>/<repo>/branches/<编码分支名>/
 ```
 
-例如：
+分支名使用 `encodeURIComponent` 编码，因此包含 `/` 的分支仍只占一个目录层级。例如：
 
 ```text
-projects/github.com/team/app/.env.local
-projects/github.com/team/app/config/.env.dev
+projects/github.com/team/app/branches/main/.env.local
+projects/github.com/team/app/branches/feature%2Flogin/config/.env.dev
 ```
+
+为了兼容旧数据，当分支目录不存在时，会把旧共享目录 `projects/<host>/<owner>/<repo>/` 中匹配的 env 文件复制到分支目录并提交，旧文件保持不变。分支目录一旦存在，就只同步该目录。detached HEAD 状态下没有分支名，对应项目会跳过同步。
 
 ## 同步行为
 
 打开工作区时：
 
-- 在当前工作区下搜索 Git 项目
+- 在当前工作区下搜索 Git 项目并解析当前分支
+- 分支目录不存在时，从旧共享文件初始化该目录（如果有匹配文件）
 - 远端存在、本地缺失：把远端文件拉到对应 Git 项目根目录
 - 本地存在、远端缺失：提示 `上传本地文件` 或 `跳过`
 - 两边都存在且内容一致：不处理
@@ -422,7 +425,8 @@ echo "B=2" > config/.env.dev
 - 不支持虚拟工作区
 - 扩展不会替你创建 GitHub 仓库
 - 提交前不会对 secrets 做加密
-- 项目映射规则固定为 `origin -> projects/<host>/<owner>/<repo>/`
+- 项目映射规则固定为 `origin + 当前分支 -> projects/<host>/<owner>/<repo>/branches/<编码分支名>/`
+- 旧版本扩展仍可读取保留下来的旧共享文件，但无法读取按分支保存的新数据
 
 ## Release Notes
 

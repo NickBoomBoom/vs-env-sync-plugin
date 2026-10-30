@@ -8,7 +8,7 @@ Use it when you want a single private repo to back up, share, and restore `.env`
 
 - Configure one existing private Git repository as the env config repository
 - Recursively discover Git projects inside the current workspace folder
-- Detect each discovered Git project's `origin` and map it to a fixed folder in the config repository
+- Detect each discovered Git project's `origin` and current branch, and map them to a branch-specific folder
 - Pull matched env files when a workspace opens
 - Commit and push matched env file changes after local edits
 - Prompt instead of silently overwriting when local and remote contents differ
@@ -19,7 +19,7 @@ Use it when you want a single private repo to back up, share, and restore `.env`
 
 ## How It Works
 
-Env Sync scans the current workspace folder for Git projects up to a configurable depth and reads each discovered project's `remote.origin.url`.
+Env Sync scans the current workspace folder for Git projects up to a configurable depth and reads each discovered project's `remote.origin.url` and current branch.
 
 Each Git project is normalized to:
 
@@ -39,24 +39,27 @@ All map to:
 github.com/team/app
 ```
 
-Inside the config repository, files are stored at:
+Inside the config repository, files for the current branch are stored at:
 
 ```text
-projects/<host>/<owner>/<repo>/
+projects/<host>/<owner>/<repo>/branches/<encoded-branch>/
 ```
 
-For example:
+The branch name is encoded with `encodeURIComponent`, so slashes stay within one directory segment. For example:
 
 ```text
-projects/github.com/team/app/.env.local
-projects/github.com/team/app/config/.env.dev
+projects/github.com/team/app/branches/main/.env.local
+projects/github.com/team/app/branches/feature%2Flogin/config/.env.dev
 ```
+
+For backward compatibility, when a branch directory does not exist, matching files from the legacy shared directory `projects/<host>/<owner>/<repo>/` are copied into it and committed. The legacy files remain unchanged. Once the branch directory exists, only that directory is synchronized. Projects in detached HEAD state are skipped because no branch name is available.
 
 ## Sync Behavior
 
 On workspace open:
 
-- Search for Git projects under the current workspace folder
+- Search for Git projects under the current workspace folder and resolve their current branches
+- Initialize a missing branch directory from matching legacy shared files, if any
 - Remote exists, local missing: pull remote file into that Git project's root
 - Local exists, remote missing: prompt `上传本地文件` or `跳过`
 - Both exist and are identical: do nothing
@@ -420,7 +423,8 @@ Open the test project in the extension host, initialize the config repo, and val
 - Virtual workspaces are not supported
 - The extension does not create the GitHub repository for you
 - The extension does not encrypt secrets before commit
-- Project mapping is fixed to `origin -> projects/<host>/<owner>/<repo>/`
+- Project mapping is fixed to `origin + current branch -> projects/<host>/<owner>/<repo>/branches/<encoded-branch>/`
+- Older extension versions can still read the preserved legacy shared files, but cannot read branch-specific data
 
 ## Release Notes
 

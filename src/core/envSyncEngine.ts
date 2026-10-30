@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { ConfigRepoManager, ReadyConfigRepo } from "./configRepoManager";
-import { readMatchingFiles, removeFileIfExists, writeFileEnsuringDir, pruneEmptyDirectories } from "./fileStore";
+import { pathExists, readMatchingFiles, removeFileIfExists, writeFileEnsuringDir, pruneEmptyDirectories } from "./fileStore";
 import {
   ConfigRepoSettings,
   Logger,
@@ -17,6 +17,31 @@ function bufferEquals(left: Buffer, right: Buffer): boolean {
 
 function projectStorePath(repoPath: string, context: WorkspaceSyncContext): string {
   return path.join(repoPath, "projects", context.project.host, context.project.owner, context.project.repo);
+}
+
+function branchStorePath(repoPath: string, context: WorkspaceSyncContext): string {
+  return path.join(projectStorePath(repoPath, context), "branches", encodeURIComponent(context.branch));
+}
+
+async function prepareBranchStore(
+  repo: ReadyConfigRepo,
+  context: WorkspaceSyncContext
+): Promise<{ remoteRoot: string; inherited: boolean }> {
+  const remoteRoot = branchStorePath(repo.repoPath, context);
+  if (await pathExists(remoteRoot)) {
+    return { remoteRoot, inherited: false };
+  }
+
+  const legacyRoot = projectStorePath(repo.repoPath, context);
+  const legacyFiles = await readMatchingFiles(legacyRoot, context.pathRegexes, [
+    ...context.ignoredProjectRoots,
+    "branches"
+  ]);
+  for (const [relativePath, content] of legacyFiles) {
+    await writeFileEnsuringDir(path.join(remoteRoot, relativePath), content);
+  }
+
+  return { remoteRoot, inherited: legacyFiles.size > 0 };
 }
 
 function commitMessage(context: WorkspaceSyncContext): string {
@@ -47,7 +72,7 @@ export class EnvSyncEngine {
   }
 
   private async runOpenSync(repo: ReadyConfigRepo, context: WorkspaceSyncContext): Promise<OpenSyncResult> {
-    const remoteRoot = projectStorePath(repo.repoPath, context);
+    const { remoteRoot, inherited } = await prepareBranchStore(repo, context);
     const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots);
     const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes, context.ignoredProjectRoots);
     const allPaths = new Set<string>([...localFiles.keys(), ...remoteFiles.keys()]);
@@ -105,16 +130,21 @@ export class EnvSyncEngine {
       result.skippedPaths.push(relativePath);
     }
 
-    if (result.uploadedPaths.length > 0) {
+    if (inherited || result.uploadedPaths.length > 0) {
       const committed = await this.configRepoManager.commitProjectChanges(repo, remoteRoot, commitMessage(context));
-      this.logger.info(`打开工作区同步已上传 ${result.uploadedPaths.length} 个文件；已提交：${committed ? "是" : "否"}。`);
+      if (inherited) {
+        this.logger.info(`已为 ${context.project.slug} 的分支 ${context.branch} 继承旧共享 env 数据；已提交：${committed ? "是" : "否"}。`);
+      }
+      if (result.uploadedPaths.length > 0) {
+        this.logger.info(`打开工作区同步已上传 ${result.uploadedPaths.length} 个文件；已提交：${committed ? "是" : "否"}。`);
+      }
     }
 
     return result;
   }
 
   private async runPushSync(repo: ReadyConfigRepo, context: WorkspaceSyncContext): Promise<PushSyncResult> {
-    const remoteRoot = projectStorePath(repo.repoPath, context);
+    const { remoteRoot, inherited } = await prepareBranchStore(repo, context);
     const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots);
     const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes);
     const pushedPaths: string[] = [];
@@ -140,9 +170,12 @@ export class EnvSyncEngine {
       deletedPaths.push(relativePath);
     }
 
-    const committed = pushedPaths.length > 0 || deletedPaths.length > 0
+    const committed = inherited || pushedPaths.length > 0 || deletedPaths.length > 0
       ? await this.configRepoManager.commitProjectChanges(repo, remoteRoot, commitMessage(context))
       : false;
+    if (inherited) {
+      this.logger.info(`已为 ${context.project.slug} 的分支 ${context.branch} 继承旧共享 env 数据；已提交：${committed ? "是" : "否"}。`);
+    }
 
     return {
       pushedPaths,

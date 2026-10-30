@@ -413,7 +413,12 @@ class WorkspaceSession implements vscode.Disposable {
         return [];
       }
 
-      return discoveredProjects.map(({ projectPath, project }) => {
+      return discoveredProjects.flatMap(({ projectPath, project, branch }) => {
+        if (!branch) {
+          this.logger.warn(`已跳过 ${project.slug}（${projectPath}）：当前处于 detached HEAD，无法确定分支。`);
+          return [];
+        }
+
         const relativeProjectPath = normalizeRelativePath(toWorkspaceRelativePath(this.folder.uri.fsPath, projectPath));
         const ignoredProjectRoots = discoveredProjects
           .filter(
@@ -422,14 +427,15 @@ class WorkspaceSession implements vscode.Disposable {
           )
           .map(({ projectPath: candidatePath }) => normalizeRelativePath(toWorkspaceRelativePath(projectPath, candidatePath)));
 
-        return {
+        return [{
           workspacePath: projectPath,
           workspaceName: relativeProjectPath.length > 0 ? relativeProjectPath : this.folder.name,
+          branch,
           project,
           pathRegexSources: syncSettings.pathRegexSources,
           pathRegexes: syncSettings.pathRegexes,
           ignoredProjectRoots
-        };
+        }];
       });
     })();
 

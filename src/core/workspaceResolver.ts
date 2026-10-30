@@ -9,6 +9,7 @@ import { DEFAULT_GIT_PROJECT_IGNORE_DIRECTORIES, RepoIdentity } from "./types";
 export interface DiscoveredWorkspaceProject {
   projectPath: string;
   project: RepoIdentity;
+  branch: string | undefined;
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {
@@ -51,13 +52,17 @@ export async function resolveWorkspaceProject(workspacePath: string, git: GitCli
   return parseOriginUrl(originUrl);
 }
 
+export async function resolveWorkspaceBranch(workspacePath: string, git: GitCli): Promise<string | undefined> {
+  return (await git.tryRun(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: workspacePath })) || undefined;
+}
+
 export async function discoverWorkspaceProjects(
   workspaceRootPath: string,
   git: GitCli,
   maxDepth: number,
   ignoredDirectoryNames: readonly string[] = DEFAULT_GIT_PROJECT_IGNORE_DIRECTORIES
 ): Promise<DiscoveredWorkspaceProject[]> {
-  const discoveredProjects = new Map<string, RepoIdentity>();
+  const discoveredProjects = new Map<string, DiscoveredWorkspaceProject>();
   const ignoredDirectoryNameSet = new Set(
     ignoredDirectoryNames.map((directoryName) => directoryName.trim()).filter((directoryName) => directoryName.length > 0)
   );
@@ -66,7 +71,9 @@ export async function discoverWorkspaceProjects(
     if (await pathExists(path.join(currentPath, ".git"))) {
       const project = await resolveWorkspaceProject(currentPath, git);
       if (project) {
-        discoveredProjects.set(await resolveRealPath(currentPath), project);
+        const projectPath = await resolveRealPath(currentPath);
+        const branch = await resolveWorkspaceBranch(currentPath, git);
+        discoveredProjects.set(projectPath, { projectPath, project, branch });
       }
     }
 
@@ -92,7 +99,6 @@ export async function discoverWorkspaceProjects(
 
   await walk(await resolveRealPath(workspaceRootPath), 0);
 
-  return [...discoveredProjects.entries()]
-    .sort(([leftPath], [rightPath]) => leftPath.localeCompare(rightPath))
-    .map(([projectPath, project]) => ({ projectPath, project }));
+  return [...discoveredProjects.values()]
+    .sort((left, right) => left.projectPath.localeCompare(right.projectPath));
 }

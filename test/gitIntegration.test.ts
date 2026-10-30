@@ -57,6 +57,7 @@ function createContext(workspacePath: string): WorkspaceSyncContext {
   return {
     workspacePath,
     workspaceName: "workspace",
+    branch: "main",
     project: {
       host: "github.com",
       owner: "team",
@@ -78,7 +79,7 @@ describe("git integration", () => {
     await createInitialCommit(
       seedClone,
       gitCli,
-      path.join("projects", "github.com", "team", "app", ".env.local"),
+      path.join("projects", "github.com", "team", "app", "branches", "main", ".env.local"),
       "REMOTE=1\n"
     );
 
@@ -115,8 +116,39 @@ describe("git integration", () => {
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
     await git(gitCli, verifyClone, "checkout", "main");
     assert.equal(
-      await fs.readFile(path.join(verifyClone, "projects", "github.com", "team", "app", ".env.local"), "utf8"),
+      await fs.readFile(path.join(verifyClone, "projects", "github.com", "team", "app", "branches", "main", ".env.local"), "utf8"),
       "REMOTE=2\n"
     );
+  });
+
+  it("pushes inherited legacy data without removing the legacy files", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-inherit-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(
+      seedClone,
+      gitCli,
+      path.join("projects", "github.com", "team", "app", ".env.local"),
+      "SHARED=1\n"
+    );
+
+    const workspacePath = path.join(root, "workspace");
+    await fs.mkdir(workspacePath, { recursive: true });
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const engine = new EnvSyncEngine(manager, new TestPrompts(), new TestLogger());
+    const settings = { repoUrl: bareConfigRepo, branch: "main" };
+    const readyConfigRepo = await manager.ensureReady(settings);
+    await git(gitCli, readyConfigRepo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, readyConfigRepo.repoPath, "config", "user.name", "Test User");
+
+    const openResult = await engine.syncOnWorkspaceOpen(settings, createContext(workspacePath));
+    assert.deepEqual(openResult.pulledPaths, [".env.local"]);
+
+    const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
+    const legacyFile = path.join(verifyClone, "projects", "github.com", "team", "app", ".env.local");
+    const branchFile = path.join(verifyClone, "projects", "github.com", "team", "app", "branches", "main", ".env.local");
+    assert.equal(await fs.readFile(legacyFile, "utf8"), "SHARED=1\n");
+    assert.equal(await fs.readFile(branchFile, "utf8"), "SHARED=1\n");
   });
 });
