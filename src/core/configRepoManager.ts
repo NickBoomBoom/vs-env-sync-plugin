@@ -34,7 +34,7 @@ export class ConfigRepoManager {
     await this.git.run(["fetch", "--prune", "origin"], { cwd: repo.repoPath });
 
     if (await this.hasRemoteBranch(repo.repoPath, repo.branch)) {
-      await this.git.run(["pull", "--rebase", "origin", repo.branch], { cwd: repo.repoPath });
+      await this.git.run(["pull", "--rebase", "--autostash", "origin", repo.branch], { cwd: repo.repoPath });
       return;
     }
 
@@ -70,6 +70,11 @@ export class ConfigRepoManager {
   }
 
   private async checkoutBranch(repoPath: string, branch: string): Promise<void> {
+    const currentBranch = await this.git.tryRun(["branch", "--show-current"], { cwd: repoPath });
+    if (currentBranch === branch) {
+      return;
+    }
+
     const localBranchExists = await this.hasLocalBranch(repoPath, branch);
     const remoteBranchExists = await this.hasRemoteBranch(repoPath, branch);
 

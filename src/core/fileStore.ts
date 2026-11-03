@@ -32,7 +32,10 @@ async function walkFiles(
         continue;
       }
 
-      results.push(...(await walkFiles(rootPath, excludedDirectories, nextRelativePath)));
+      const nestedFiles = await walkFiles(rootPath, excludedDirectories, nextRelativePath);
+      for (const relativePath of nestedFiles) {
+        results.push(relativePath);
+      }
       continue;
     }
 

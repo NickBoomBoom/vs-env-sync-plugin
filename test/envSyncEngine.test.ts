@@ -389,4 +389,37 @@ describe("EnvSyncEngine", () => {
     assert.equal(commitCount, 0);
     await assert.rejects(fs.access(path.join(legacyRoot, "branches", "main")));
   });
+
+  it("pushes env changes when a project contains many non-matching files", async function () {
+    this.timeout(60_000);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-many-files-"));
+    const workspacePath = path.join(root, "workspace");
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = path.join(remoteGitRoot, "projects", "github.com", "team", "app", "branches", "main");
+    const dependenciesPath = path.join(workspacePath, "dependencies");
+
+    try {
+      await fs.mkdir(dependenciesPath, { recursive: true });
+      await fs.mkdir(remoteStorePath, { recursive: true });
+      await fs.writeFile(path.join(workspacePath, ".env"), "LOCAL=1\n");
+      for (let offset = 0; offset < 130_000; offset += 1_000) {
+        await Promise.all(
+          Array.from({ length: 1_000 }, (_, index) =>
+            fs.writeFile(path.join(dependenciesPath, `${offset + index}.js`), "")
+          )
+        );
+      }
+
+      const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), new StaticPrompts(), new InMemoryLogger());
+      const result = await engine.syncLocalChanges(
+        { repoUrl: "git@github.com:team/env-config.git", branch: "main" },
+        createContext(workspacePath)
+      );
+
+      assert.deepEqual(result.pushedPaths, [".env"]);
+      assert.equal(await fs.readFile(path.join(remoteStorePath, ".env"), "utf8"), "LOCAL=1\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

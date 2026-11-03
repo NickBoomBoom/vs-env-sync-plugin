@@ -151,4 +151,54 @@ describe("git integration", () => {
     assert.equal(await fs.readFile(legacyFile, "utf8"), "SHARED=1\n");
     assert.equal(await fs.readFile(branchFile, "utf8"), "SHARED=1\n");
   });
+
+  it("pushes changes while preserving uncommitted files in the config repo", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-dirty-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    const legacyProjectFile = path.join("projects", "github.com", "team", "app", ".env");
+    await createInitialCommit(
+      seedClone,
+      gitCli,
+      legacyProjectFile,
+      "SHARED=1\nKEEP1=1\nKEEP2=1\nKEEP3=1\nREMOTE=1\n"
+    );
+
+    const workspacePath = path.join(root, "workspace");
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(workspacePath, ".env"), "LOCAL=2\n");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const engine = new EnvSyncEngine(manager, new TestPrompts(), new TestLogger());
+    const settings = { repoUrl: bareConfigRepo, branch: "main" };
+    const readyConfigRepo = await manager.ensureReady(settings);
+    await git(gitCli, readyConfigRepo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, readyConfigRepo.repoPath, "config", "user.name", "Test User");
+    await fs.writeFile(path.join(seedClone, legacyProjectFile), "SHARED=1\nKEEP1=1\nKEEP2=1\nKEEP3=1\nREMOTE=2\n");
+    await git(gitCli, seedClone, "add", "-A");
+    await git(gitCli, seedClone, "commit", "-m", "remote update");
+    await git(gitCli, seedClone, "push");
+    await git(gitCli, readyConfigRepo.repoPath, "fetch", "--prune", "origin");
+    await fs.writeFile(
+      path.join(readyConfigRepo.repoPath, legacyProjectFile),
+      "UNCOMMITTED=1\nKEEP1=1\nKEEP2=1\nKEEP3=1\nREMOTE=1\n"
+    );
+
+    const pushResult = await engine.syncLocalChanges(settings, createContext(workspacePath));
+
+    assert.deepEqual(pushResult, {
+      pushedPaths: [".env"],
+      deletedPaths: [],
+      committed: true
+    });
+    assert.equal(
+      await fs.readFile(path.join(readyConfigRepo.repoPath, legacyProjectFile), "utf8"),
+      "UNCOMMITTED=1\nKEEP1=1\nKEEP2=1\nKEEP3=1\nREMOTE=2\n"
+    );
+    const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
+    assert.equal(
+      await fs.readFile(path.join(verifyClone, "projects", "github.com", "team", "app", "branches", "main", ".env"), "utf8"),
+      "LOCAL=2\n"
+    );
+  });
 });
