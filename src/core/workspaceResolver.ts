@@ -56,6 +56,11 @@ export async function resolveWorkspaceBranch(workspacePath: string, git: GitCli)
   return (await git.tryRun(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: workspacePath })) || undefined;
 }
 
+export async function resolveGitHeadPath(workspacePath: string, git: GitCli): Promise<string | undefined> {
+  const headPath = await git.tryRun(["rev-parse", "--git-path", "HEAD"], { cwd: workspacePath });
+  return headPath ? path.resolve(workspacePath, headPath) : undefined;
+}
+
 export async function discoverWorkspaceProjects(
   workspaceRootPath: string,
   git: GitCli,

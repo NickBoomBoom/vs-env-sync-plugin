@@ -13,6 +13,7 @@ import {
   normalizeRelativePath,
   toWorkspaceRelativePath
 } from "./core/pathRegex";
+import { LatestTaskRunner } from "./core/latestTaskRunner";
 import { SerialQueue } from "./core/serialQueue";
 import { SyncStateStore } from "./core/syncStateStore";
 import {
@@ -27,7 +28,8 @@ import {
   NotificationLevel,
   WorkspaceSyncContext
 } from "./core/types";
-import { discoverWorkspaceProjects } from "./core/workspaceResolver";
+import { WriteEventSuppressor } from "./core/writeEventSuppressor";
+import { discoverWorkspaceProjects, resolveGitHeadPath, resolveWorkspaceBranch } from "./core/workspaceResolver";
 
 interface SessionSyncSettings {
   pathRegexSources: string[];
@@ -163,8 +165,9 @@ class WorkspaceSession implements vscode.Disposable {
   private watcher: vscode.FileSystemWatcher | undefined;
   private gitWatcher: vscode.FileSystemWatcher | undefined;
   private gitDirectoryWatcher: vscode.FileSystemWatcher | undefined;
+  private gitHeadWatchers: vscode.FileSystemWatcher[] = [];
   private debounceHandle: NodeJS.Timeout | undefined;
-  private suppressedPaths = new Map<string, number>();
+  private readonly writeEventSuppressor = new WriteEventSuppressor();
   private pendingProjectPaths = new Set<string>();
   private syncing = false;
   private cachedContexts: WorkspaceSyncContext[] | undefined;
@@ -194,6 +197,7 @@ class WorkspaceSession implements vscode.Disposable {
     this.gitDirectoryWatcher.onDidCreate(invalidateFromGit);
     this.gitDirectoryWatcher.onDidChange(invalidateFromGit);
     this.gitDirectoryWatcher.onDidDelete(invalidateFromGit);
+    await this.refreshGitHeadWatchers();
     await this.syncOnOpen();
   }
 
@@ -201,9 +205,44 @@ class WorkspaceSession implements vscode.Disposable {
     this.watcher?.dispose();
     this.gitWatcher?.dispose();
     this.gitDirectoryWatcher?.dispose();
+    for (const watcher of this.gitHeadWatchers) {
+      watcher.dispose();
+    }
+    this.gitHeadWatchers = [];
     if (this.debounceHandle) {
       clearTimeout(this.debounceHandle);
     }
+  }
+
+  private async refreshGitHeadWatchers(): Promise<void> {
+    for (const watcher of this.gitHeadWatchers) {
+      watcher.dispose();
+    }
+    this.gitHeadWatchers = [];
+    const contexts = await this.resolveContexts();
+    const projectPaths = new Set(contexts.map((context) => context.workspacePath));
+    for (const projectPath of projectPaths) {
+      const headPath = await resolveGitHeadPath(projectPath, this.git);
+      if (!headPath) {
+        continue;
+      }
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(vscode.Uri.file(path.dirname(headPath)), path.basename(headPath))
+      );
+      watcher.onDidChange(() => this.invalidateContextCache());
+      watcher.onDidCreate(() => this.invalidateContextCache());
+      watcher.onDidDelete(() => this.invalidateContextCache());
+      this.gitHeadWatchers.push(watcher);
+    }
+  }
+
+  private async refreshContextBranch(context: WorkspaceSyncContext): Promise<WorkspaceSyncContext | undefined> {
+    const branch = await resolveWorkspaceBranch(context.workspacePath, this.git);
+    if (!branch) {
+      this.logger.warn(`已跳过 ${context.project.slug}（${context.workspacePath}）：当前处于 detached HEAD。`);
+      return undefined;
+    }
+    return { ...context, branch };
   }
 
   private async syncOnOpen(): Promise<void> {
@@ -225,11 +264,15 @@ class WorkspaceSession implements vscode.Disposable {
           return;
         }
 
-        for (const context of contexts) {
+        for (const cachedContext of contexts) {
+          const context = await this.refreshContextBranch(cachedContext);
+          if (!context) {
+            continue;
+          }
           this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 执行打开工作区同步。`);
           this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行打开工作区同步。`);
           const result = await this.engine.syncOnWorkspaceOpen(settings, context);
-          this.suppressWatcherEvents(context.workspacePath, result.pulledPaths);
+          await this.suppressWatcherEvents(context.workspacePath, result.pulledPaths, []);
           const syncSummaryParts: string[] = [];
           if (result.pulledPaths.length > 0) {
             syncSummaryParts.push(`已拉取 ${summarizePaths(result.pulledPaths)}`);
@@ -279,7 +322,7 @@ class WorkspaceSession implements vscode.Disposable {
       return;
     }
 
-    if (this.isSuppressedAbsolutePath(uri.fsPath)) {
+    if (await this.isSuppressedAbsolutePath(uri.fsPath)) {
       return;
     }
 
@@ -320,7 +363,8 @@ class WorkspaceSession implements vscode.Disposable {
           this.pendingProjectPaths.clear();
 
           for (const projectPath of pendingPaths) {
-            const context = contextsByPath.get(projectPath);
+            const cachedContext = contextsByPath.get(projectPath);
+            const context = cachedContext ? await this.refreshContextBranch(cachedContext) : undefined;
             if (!context) {
               continue;
             }
@@ -328,7 +372,7 @@ class WorkspaceSession implements vscode.Disposable {
             this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 推送 env 变更。`);
             this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行推送同步。`);
             const result = await this.engine.syncLocalChanges(settings, context);
-            this.suppressWatcherEvents(context.workspacePath, [...result.pulledPaths, ...result.deletedLocalPaths]);
+            await this.suppressWatcherEvents(context.workspacePath, result.pulledPaths, result.deletedLocalPaths);
             const hasChanges = result.committed || [
               ...result.pushedPaths,
               ...result.deletedPaths,
@@ -368,27 +412,23 @@ class WorkspaceSession implements vscode.Disposable {
     }, 3000);
   }
 
-  private suppressWatcherEvents(projectPath: string, relativePaths: string[]): void {
-    const expiresAt = Date.now() + 10_000;
-    for (const relativePath of relativePaths) {
+  private async suppressWatcherEvents(
+    projectPath: string,
+    pulledPaths: readonly string[],
+    deletedPaths: readonly string[]
+  ): Promise<void> {
+    for (const relativePath of pulledPaths) {
       const absolutePath = path.join(projectPath, normalizeRelativePath(relativePath));
-      this.suppressedPaths.set(absolutePath, expiresAt);
+      this.writeEventSuppressor.expectWrite(absolutePath, await fs.readFile(absolutePath));
+    }
+    for (const relativePath of deletedPaths) {
+      const absolutePath = path.join(projectPath, normalizeRelativePath(relativePath));
+      this.writeEventSuppressor.expectDelete(absolutePath);
     }
   }
 
-  private isSuppressedAbsolutePath(absolutePath: string): boolean {
-    const normalized = path.resolve(absolutePath);
-    const expiresAt = this.suppressedPaths.get(normalized);
-    if (!expiresAt) {
-      return false;
-    }
-
-    if (Date.now() > expiresAt) {
-      this.suppressedPaths.delete(normalized);
-      return false;
-    }
-
-    return true;
+  private async isSuppressedAbsolutePath(absolutePath: string): Promise<boolean> {
+    return this.writeEventSuppressor.shouldSuppress(absolutePath);
   }
 
   private async resolveContexts(): Promise<WorkspaceSyncContext[]> {
@@ -494,7 +534,7 @@ class WorkspaceSession implements vscode.Disposable {
         continue;
       }
 
-      if (this.isSuppressedAbsolutePath(uri.fsPath)) {
+      if (await this.isSuppressedAbsolutePath(uri.fsPath)) {
         return undefined;
       }
 
@@ -595,6 +635,7 @@ class WorkspaceSession implements vscode.Disposable {
 class WorkspaceCoordinator implements vscode.Disposable {
   private readonly sessions = new Map<string, WorkspaceSession>();
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly refreshRunner = new LatestTaskRunner();
 
   constructor(
     private readonly queue: SerialQueue,
@@ -633,6 +674,10 @@ class WorkspaceCoordinator implements vscode.Disposable {
   }
 
   async refreshSessions(): Promise<void> {
+    return this.refreshRunner.run(() => this.refreshLatestSessions());
+  }
+
+  private async refreshLatestSessions(): Promise<void> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     this.statusBar.showReady("Env Sync 已就绪。");
 

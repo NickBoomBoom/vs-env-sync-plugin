@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { GitCli } from "../src/core/git";
-import { discoverWorkspaceProjects, resolveWorkspaceBranch, resolveWorkspaceProject } from "../src/core/workspaceResolver";
+import { discoverWorkspaceProjects, resolveGitHeadPath, resolveWorkspaceBranch, resolveWorkspaceProject } from "../src/core/workspaceResolver";
 
 async function git(gitCli: GitCli, cwd: string, ...args: string[]): Promise<string> {
   return gitCli.run(args, { cwd });
@@ -121,5 +121,33 @@ describe("workspaceResolver", () => {
         { projectPath: "apps/repo-one", slug: "github.com/team/repo-one" }
       ]
     );
+  });
+
+  it("resolves the real HEAD path and current branch inside a worktree", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-worktree-"));
+    const repoPath = path.join(root, "repo");
+    const worktreePath = path.join(root, "feature-worktree");
+    const gitCli = new GitCli();
+    await initRepo(repoPath, gitCli, "git@github.com:team/app.git");
+    await fs.writeFile(path.join(repoPath, "README.md"), "BASE=1\n");
+    await git(gitCli, repoPath, "add", "README.md");
+    await git(
+      gitCli,
+      repoPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "initial"
+    );
+    await git(gitCli, repoPath, "worktree", "add", worktreePath, "-b", "feature");
+
+    const headPath = await resolveGitHeadPath(worktreePath, gitCli);
+    assert.ok(headPath);
+    assert.equal(await fs.realpath(headPath), await fs.realpath(path.join(repoPath, ".git", "worktrees", "feature-worktree", "HEAD")));
+    await git(gitCli, worktreePath, "checkout", "-b", "other");
+    assert.equal(await resolveWorkspaceBranch(worktreePath, gitCli), "other");
   });
 });
