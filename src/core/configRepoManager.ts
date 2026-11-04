@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { GitCli } from "./git";
+import { GitCli, GitCommandError } from "./git";
 import { ConfigRepoSettings, Logger } from "./types";
 import { hashRemoteUrl } from "./git";
 
@@ -31,14 +31,10 @@ export class ConfigRepoManager {
 
   async refresh(repo: ReadyConfigRepo): Promise<void> {
     await this.checkoutBranch(repo.repoPath, repo.branch);
-    await this.git.run(["fetch", "--prune", "origin"], { cwd: repo.repoPath });
-
-    if (await this.hasRemoteBranch(repo.repoPath, repo.branch)) {
-      await this.git.run(["rebase", "--autostash", `origin/${repo.branch}`], { cwd: repo.repoPath });
-      return;
+    await this.updateFromRemote(repo);
+    if (await this.hasUnpushedCommits(repo)) {
+      await this.pushWithRecovery(repo);
     }
-
-    this.logger.info(`远端分支 ${repo.branch} 暂不存在，已跳过拉取。`);
   }
 
   async commitProjectChanges(repo: ReadyConfigRepo, projectStorePath: string, message: string): Promise<boolean> {
@@ -49,12 +45,56 @@ export class ConfigRepoManager {
       cwd: repo.repoPath
     });
     if (hasChanges === undefined) {
-      await this.git.run(["commit", "-m", message], { cwd: repo.repoPath });
-      await this.push(repo);
+      await this.git.run(["commit", "-m", message, "--", relativeProjectPath], { cwd: repo.repoPath });
+      await this.pushWithRecovery(repo);
       return true;
     }
 
     return false;
+  }
+
+  private async updateFromRemote(repo: ReadyConfigRepo): Promise<void> {
+    await this.git.run(["fetch", "--prune", "origin"], { cwd: repo.repoPath });
+    if (await this.hasRemoteBranch(repo.repoPath, repo.branch)) {
+      await this.git.run(["rebase", "--autostash", `origin/${repo.branch}`], { cwd: repo.repoPath });
+      return;
+    }
+    this.logger.info(`远端分支 ${repo.branch} 暂不存在，已跳过拉取。`);
+  }
+
+  private async hasUnpushedCommits(repo: ReadyConfigRepo): Promise<boolean> {
+    if (!(await this.hasHead(repo.repoPath))) {
+      return false;
+    }
+    if (!(await this.hasRemoteBranch(repo.repoPath, repo.branch))) {
+      return true;
+    }
+    const count = await this.git.run(["rev-list", "--count", `origin/${repo.branch}..HEAD`], {
+      cwd: repo.repoPath
+    });
+    return Number(count) > 0;
+  }
+
+  private async pushWithRecovery(repo: ReadyConfigRepo): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.push(repo);
+        return;
+      } catch (error) {
+        if (!this.isPushRejected(error) || attempt === 2) {
+          throw error;
+        }
+        await this.updateFromRemote(repo);
+      }
+    }
+  }
+
+  private isPushRejected(error: unknown): boolean {
+    if (!(error instanceof GitCommandError)) {
+      return false;
+    }
+    const details = `${error.message}\n${error.stderr}\n${error.stdout}`.toLowerCase();
+    return ["non-fast-forward", "failed to push some refs", "[rejected]", "fetch first"].some((part) => details.includes(part));
   }
 
   private async push(repo: ReadyConfigRepo): Promise<void> {
@@ -78,13 +118,13 @@ export class ConfigRepoManager {
     const localBranchExists = await this.hasLocalBranch(repoPath, branch);
     const remoteBranchExists = await this.hasRemoteBranch(repoPath, branch);
 
-    if (remoteBranchExists) {
-      await this.git.run(["checkout", "-B", branch, `origin/${branch}`], { cwd: repoPath });
+    if (localBranchExists) {
+      await this.git.run(["checkout", branch], { cwd: repoPath });
       return;
     }
 
-    if (localBranchExists) {
-      await this.git.run(["checkout", branch], { cwd: repoPath });
+    if (remoteBranchExists) {
+      await this.git.run(["checkout", "-b", branch, "--track", `origin/${branch}`], { cwd: repoPath });
       return;
     }
 

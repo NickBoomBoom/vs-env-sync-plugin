@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { ConfigRepoManager } from "../src/core/configRepoManager";
 import { EnvSyncEngine } from "../src/core/envSyncEngine";
-import { GitCli } from "../src/core/git";
+import { GitCli, GitCommandError } from "../src/core/git";
 import { compilePathRegexes } from "../src/core/pathRegex";
 import { SyncStateStore } from "../src/core/syncStateStore";
 import { Logger, SyncPrompts, WorkspaceSyncContext } from "../src/core/types";
@@ -214,6 +214,124 @@ describe("git integration", () => {
       await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env")), "utf8"),
       "LOCAL=2\n"
     );
+  });
+
+  it("commits only the current project and preserves other index changes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-scope-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, "README.md", "BASE=1\n");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const repo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "main" });
+    await git(gitCli, repo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, repo.repoPath, "config", "user.name", "Test User");
+    const branchFile = hashedBranchFile("main", ".env");
+    await fs.mkdir(path.dirname(path.join(repo.repoPath, branchFile)), { recursive: true });
+    await fs.writeFile(path.join(repo.repoPath, branchFile), "CURRENT=1\n");
+    await fs.writeFile(path.join(repo.repoPath, "other.txt"), "OTHER=1\n");
+    await fs.writeFile(path.join(repo.repoPath, "README.md"), "LOCAL=1\n");
+    await git(gitCli, repo.repoPath, "add", "other.txt");
+
+    await manager.commitProjectChanges(repo, path.dirname(path.join(repo.repoPath, branchFile)), "current project");
+
+    const committedFiles = await git(gitCli, repo.repoPath, "show", "--name-only", "--format=", "HEAD");
+    assert.equal(committedFiles, branchFile.replace(/\\/g, "/"));
+    assert.equal(await git(gitCli, repo.repoPath, "diff", "--cached", "--name-only"), "other.txt");
+    assert.equal(await fs.readFile(path.join(repo.repoPath, "README.md"), "utf8"), "LOCAL=1\n");
+  });
+
+  it("preserves local commits when switching back to an existing config branch", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-local-branch-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, "README.md", "BASE=1\n");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const settings = { repoUrl: bareConfigRepo, branch: "main" };
+    const repo = await manager.ensureReady(settings);
+    await git(gitCli, repo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, repo.repoPath, "config", "user.name", "Test User");
+    await fs.writeFile(path.join(repo.repoPath, "local.txt"), "LOCAL=1\n");
+    await git(gitCli, repo.repoPath, "add", "local.txt");
+    await git(gitCli, repo.repoPath, "commit", "-m", "local commit");
+    const localCommit = await git(gitCli, repo.repoPath, "rev-parse", "main");
+    await git(gitCli, repo.repoPath, "checkout", "-b", "other");
+
+    await manager.ensureReady(settings);
+
+    assert.equal(await git(gitCli, repo.repoPath, "rev-parse", "main"), localCommit);
+    assert.equal(await fs.readFile(path.join(repo.repoPath, "local.txt"), "utf8"), "LOCAL=1\n");
+  });
+
+  it("retries an ahead commit during a later refresh without file changes", async () => {
+    class FailNextPushGitCli extends GitCli {
+      private failures = 0;
+      failNextPush(): void {
+        this.failures = 3;
+      }
+      async run(args: string[], options: { cwd?: string } = {}): Promise<string> {
+        if (args[0] === "push" && this.failures > 0) {
+          this.failures -= 1;
+          throw new GitCommandError("push failed", "non-fast-forward", "", 1);
+        }
+        return super.run(args, options);
+      }
+    }
+
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-retry-"));
+    const gitCli = new FailNextPushGitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, "README.md", "BASE=1\n");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const repo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "main" });
+    await git(gitCli, repo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, repo.repoPath, "config", "user.name", "Test User");
+    await fs.writeFile(path.join(repo.repoPath, "ahead.txt"), "AHEAD=1\n");
+    await git(gitCli, repo.repoPath, "add", "ahead.txt");
+    await git(gitCli, repo.repoPath, "commit", "-m", "ahead commit");
+
+    gitCli.failNextPush();
+    await assert.rejects(manager.refresh(repo), /push failed/);
+    await manager.refresh(repo);
+
+    const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
+    assert.equal(await fs.readFile(path.join(verifyClone, "ahead.txt"), "utf8"), "AHEAD=1\n");
+  });
+
+  it("publishes a recovered first commit when the remote branch was missing", async () => {
+    class FailNextPushGitCli extends GitCli {
+      private failures = 0;
+      failNextPush(): void {
+        this.failures = 3;
+      }
+      async run(args: string[], options: { cwd?: string } = {}): Promise<string> {
+        if (args[0] === "push" && this.failures > 0) {
+          this.failures -= 1;
+          throw new GitCommandError("push failed", "non-fast-forward", "", 1);
+        }
+        return super.run(args, options);
+      }
+    }
+
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-first-retry-"));
+    const gitCli = new FailNextPushGitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const repo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "main" });
+    await git(gitCli, repo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, repo.repoPath, "config", "user.name", "Test User");
+    await fs.writeFile(path.join(repo.repoPath, "first.txt"), "FIRST=1\n");
+    await git(gitCli, repo.repoPath, "add", "first.txt");
+    await git(gitCli, repo.repoPath, "commit", "-m", "first commit");
+
+    gitCli.failNextPush();
+    await assert.rejects(manager.refresh(repo), /push failed/);
+    await manager.refresh(repo);
+
+    const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
+    assert.equal(await fs.readFile(path.join(verifyClone, "first.txt"), "utf8"), "FIRST=1\n");
   });
 
   it("rebases onto the configured branch when a concurrent fetch writes multiple branches", async () => {
