@@ -54,17 +54,13 @@ export class FileLock {
   private async acquire(lockPath: string, ownerId: string): Promise<void> {
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
     while (true) {
-      const candidatePath = `${lockPath}.${process.pid}.${randomUUID()}.candidate`;
       try {
-        await fs.mkdir(candidatePath);
+        await fs.mkdir(lockPath);
         const owner: LockOwner = { pid: process.pid, ownerId };
-        await fs.writeFile(path.join(candidatePath, "owner.json"), JSON.stringify(owner));
-        await fs.rename(candidatePath, lockPath);
+        await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(owner));
         return;
       } catch (error) {
-        await fs.rm(candidatePath, { recursive: true, force: true });
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "EPERM") {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
           throw error;
         }
       }
@@ -102,7 +98,8 @@ export class FileLock {
     try {
       const owner = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as LockOwner;
       if (owner.ownerId === ownerId) {
-        await fs.rm(lockPath, { recursive: true, force: true });
+        await fs.unlink(path.join(lockPath, "owner.json"));
+        await fs.rmdir(lockPath);
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
