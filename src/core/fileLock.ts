@@ -95,7 +95,11 @@ export class FileLock {
 
   private async readOwner(lockPath: string): Promise<LockOwner | undefined> {
     try {
-      return JSON.parse(await fs.readFile(lockPath, "utf8")) as LockOwner;
+      const owner = JSON.parse(await fs.readFile(lockPath, "utf8")) as Partial<LockOwner>;
+      if (Number.isInteger(owner.pid) && owner.pid! > 0 && typeof owner.ownerId === "string" && owner.ownerId.length > 0) {
+        return { pid: owner.pid!, ownerId: owner.ownerId };
+      }
+      return undefined;
     } catch {
       return undefined;
     }

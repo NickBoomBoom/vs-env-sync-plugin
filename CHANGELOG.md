@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
 - Added per-device three-way sync baselines so remote additions from other devices are never mistaken for local deletions.
 - Added persistent conflict-skip behavior, safe local/remote deletion handling, and recovery for interrupted commits and pushes.

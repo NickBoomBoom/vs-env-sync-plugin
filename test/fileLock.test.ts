@@ -89,6 +89,17 @@ describe("FileLock", () => {
     await assert.rejects(lock.runExclusive("repo", async () => "unreachable"), /锁文件损坏.*手动清理/);
   });
 
+  it("rejects malformed owner structures", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-owner-shape-"));
+    const lockPath = path.join(root, "locks", `${createHash("sha256").update("repo").digest("hex")}.lock`);
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, "{}");
+    await fs.utimes(lockPath, new Date(0), new Date(0));
+    const lock = new FileLock(root, { retryDelayMs: 5, heartbeatIntervalMs: 10, initializationTimeoutMs: 10 });
+
+    await assert.rejects(lock.runExclusive("repo", async () => "unreachable"), /锁文件损坏.*手动清理/);
+  });
+
   it("does not remove a newly acquired lock while racing to recover a dead owner", async () => {
     for (let iteration = 0; iteration < 20; iteration += 1) {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-recovery-race-"));
