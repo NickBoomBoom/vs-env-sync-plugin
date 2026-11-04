@@ -45,7 +45,7 @@ async function prepareBranchStore(
     { root: legacyRoot, ignoredRoots: [...context.ignoredProjectRoots, "branches"] }
   ];
   for (const source of sources) {
-    const legacyFiles = await readMatchingFiles(source.root, context.pathRegexes, source.ignoredRoots);
+    const legacyFiles = await readMatchingFiles(source.root, context.pathRegexes, source.ignoredRoots, context.ignoredDirectoryNames);
     for (const [relativePath, content] of legacyFiles) {
       const targetPath = path.join(remoteRoot, relativePath);
       assertPathInside(remoteRoot, targetPath);
@@ -123,8 +123,8 @@ export class EnvSyncEngine {
     trigger: ThreeWayTrigger
   ): Promise<InternalSyncResult> {
     const { remoteRoot, inherited } = await prepareBranchStore(repo, context);
-    const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots);
-    const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes, context.ignoredProjectRoots);
+    const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots, context.ignoredDirectoryNames);
+    const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes, context.ignoredProjectRoots, context.ignoredDirectoryNames);
     const baseline = this.stateStore ? await this.stateStore.read(settings, context) : new Map<string, string>();
     const nextBaseline = new Map(baseline);
     const allPaths = new Set<string>([...localFiles.keys(), ...remoteFiles.keys(), ...baseline.keys()]);

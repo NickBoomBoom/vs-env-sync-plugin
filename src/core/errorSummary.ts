@@ -1,4 +1,4 @@
-import { GitCommandError } from "./git";
+import { GitCommandError, redactRepoUrl } from "./git";
 
 export interface SyncErrorSummary {
   logMessage: string;
@@ -15,7 +15,7 @@ function includesAny(source: string, patterns: readonly string[]): boolean {
 }
 
 function classifyGitError(error: GitCommandError, phase: string): SyncErrorSummary {
-  const details = joinDetails([error.message, error.stderr, error.stdout, error.causeMessage ?? ""]);
+  const details = redactRepoUrl(joinDetails([error.message, error.stderr, error.stdout, error.causeMessage ?? ""]));
   const normalizedDetails = details.toLowerCase();
 
   if (error.systemCode === "ENOENT" || normalizedDetails.includes("spawn git enoent")) {

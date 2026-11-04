@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { matchesWorkspaceRelativePath, normalizeRelativePath } from "./pathRegex";
+import { BRANCH_METADATA_FILE } from "./storagePaths";
 
 export async function pathExists(targetPath: string): Promise<boolean> {
   try {
@@ -12,58 +13,53 @@ export async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
-async function walkFiles(
+async function* walkFiles(
   rootPath: string,
-  excludedDirectories: ReadonlySet<string>,
+  excludedProjectRoots: ReadonlySet<string>,
+  ignoredDirectoryNames: ReadonlySet<string>,
   currentRelativePath = ""
-): Promise<string[]> {
+): AsyncGenerator<string> {
   const currentPath = currentRelativePath ? path.join(rootPath, currentRelativePath) : rootPath;
   const entries = await fs.readdir(currentPath, { withFileTypes: true });
-  const results: string[] = [];
 
   for (const entry of entries) {
-    if (entry.name === ".git") {
+    if (entry.name === ".git" || entry.name === BRANCH_METADATA_FILE) {
       continue;
     }
 
     const nextRelativePath = currentRelativePath ? path.posix.join(currentRelativePath, entry.name) : entry.name;
     if (entry.isDirectory()) {
-      if (excludedDirectories.has(normalizeRelativePath(nextRelativePath))) {
+      if (ignoredDirectoryNames.has(entry.name) || excludedProjectRoots.has(normalizeRelativePath(nextRelativePath))) {
         continue;
       }
-
-      const nestedFiles = await walkFiles(rootPath, excludedDirectories, nextRelativePath);
-      for (const relativePath of nestedFiles) {
-        results.push(relativePath);
-      }
+      yield* walkFiles(rootPath, excludedProjectRoots, ignoredDirectoryNames, nextRelativePath);
       continue;
     }
 
     if (entry.isFile()) {
-      results.push(normalizeRelativePath(nextRelativePath));
+      yield normalizeRelativePath(nextRelativePath);
     }
   }
-
-  return results;
 }
 
 export async function readMatchingFiles(
   rootPath: string,
   pathRegexes: readonly RegExp[],
-  ignoredProjectRoots: readonly string[] = []
+  ignoredProjectRoots: readonly string[] = [],
+  ignoredDirectoryNames: readonly string[] = []
 ): Promise<Map<string, Buffer>> {
   const files = new Map<string, Buffer>();
   if (!(await pathExists(rootPath))) {
     return files;
   }
 
-  const excludedDirectories = new Set(
+  const excludedProjectRoots = new Set(
     ignoredProjectRoots
       .map((relativePath) => normalizeRelativePath(relativePath))
       .filter((relativePath) => relativePath.length > 0)
   );
-  const relativePaths = await walkFiles(rootPath, excludedDirectories);
-  for (const relativePath of relativePaths) {
+  const ignoredDirectoryNameSet = new Set(ignoredDirectoryNames);
+  for await (const relativePath of walkFiles(rootPath, excludedProjectRoots, ignoredDirectoryNameSet)) {
     if (!matchesWorkspaceRelativePath(pathRegexes, relativePath)) {
       continue;
     }

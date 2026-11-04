@@ -21,60 +21,37 @@ Env Sync 用于把每个 Git 项目中命中的环境变量文件，同步到一
 
 ## 工作原理
 
-Env Sync 会在当前工作区目录下，按可配置的最大深度递归查找 Git 项目，并读取每个项目的 `remote.origin.url` 和当前分支。
+Env Sync 会在当前工作区目录下，按可配置的最大深度递归查找 Git 项目，并读取每个项目的 `remote.origin.url` 和当前分支。项目身份保留完整组路径，例如 `gitlab.com/group/subgroup/app`，不会因为多级 group 而碰撞。
 
-每个 Git 项目都会被归一化成：
-
-```text
-github.com/<owner>/<repo>
-```
-
-例如：
-
-- `git@github.com:team/app.git`
-- `https://github.com/team/app.git`
-- `ssh://git@github.com/team/app.git`
-
-最终都会映射为：
+当前分支的数据使用项目和分支的 SHA-256 隔离存储：
 
 ```text
-github.com/team/app
+projects/<host>/<项目路径哈希>/branches/<分支名哈希>/
 ```
 
-在配置仓库中，当前分支的文件会存储到：
+哈希目录避免多级 group、大小写分支名和大小写不敏感文件系统造成覆盖。日志和提示仍使用完整、可读的 origin 与分支名。
 
-```text
-projects/<host>/<owner>/<repo>/branches/<编码分支名>/
-```
-
-分支名使用 `encodeURIComponent` 编码，因此包含 `/` 的分支仍只占一个目录层级。例如：
-
-```text
-projects/github.com/team/app/branches/main/.env.local
-projects/github.com/team/app/branches/feature%2Flogin/config/.env.dev
-```
-
-为了兼容旧数据，当分支目录不存在时，会把旧共享目录 `projects/<host>/<owner>/<repo>/` 中匹配的 env 文件复制到分支目录并提交，旧文件保持不变。分支目录一旦存在，就只同步该目录。detached HEAD 状态下没有分支名，对应项目会跳过同步。
+为了兼容旧数据，插件会从旧的 `projects/<host>/<owner>/<repo>/branches/<编码分支名>/` 或更早的项目共享目录继承匹配文件。迁移带初始化标记，中断后可以续传；完成后不再读取旧目录，因此旧文件保持不变，已删除文件也不会被旧数据复活。detached HEAD 状态下没有分支名，对应项目会跳过同步。
 
 ## 同步行为
 
 打开工作区时：
 
-- 在当前工作区下搜索 Git 项目并解析当前分支
-- 分支目录不存在时，从旧共享文件初始化该目录（如果有匹配文件）
-- 远端存在、本地缺失：把远端文件拉到对应 Git 项目根目录
-- 本地存在、远端缺失：提示 `上传本地文件` 或 `跳过`
-- 两边都存在且内容一致：不处理
-- 两边都存在但内容不同：提示 `拉取远端文件`、`上传本地文件` 或 `跳过`
+- 在当前工作区下搜索 Git 项目，并在每次同步前重新解析当前分支
+- 初始化缺失的分支目录，支持从旧分支或旧共享数据续传迁移
+- 每台设备保存上次同步成功的文件基线，通过本地、远端和基线三方比较判断变化
+- 仅远端新增或修改：拉取到本地；仅远端删除：删除本地文件
+- 仅本地新增或修改：上传；只有基线证明是本地删除时才删除远端文件
+- 两边同时变化且内容不同：提示 `拉取远端文件`、`上传本地文件` 或 `跳过`
+- 冲突选择跳过后保留旧基线，后续保存其他文件不会静默覆盖该冲突
 
 本地文件变化时：
 
-- 命中的文件 create/change 事件会做 3 秒防抖
-- 变更会镜像到配置仓库
-- 配置仓库会自动 commit 并 push
-- 删除也会同步到配置仓库
-
-所有同步任务都走同一个串行队列，因此多个工作区或嵌套仓库不会同时操作同一个配置仓库副本。
+- 命中的文件 create/change/delete 事件会做 3 秒防抖
+- 配置仓库自动 commit 并 push，提交范围严格限定当前项目分支目录
+- push 被拒绝时自动 fetch/rebase 重试；此前未推送的提交会在后续同步中补发
+- 多 VS Code 窗口通过跨进程锁串行操作同一个配置仓库副本
+- worktree 的真实 HEAD 会被监听，扩展自身的写入事件与用户编辑通过内容哈希区分
 
 ## 状态栏与错误提示
 
@@ -180,6 +157,23 @@ main
 ```
 
 这个配置只影响“Git 项目发现”，不影响 env 文件匹配。适合在打开大型父目录时，排除构建产物目录、包缓存目录等无意义扫描路径。
+
+### `envSync.syncIgnoreDirectories`
+
+扫描要同步的 env 文件时按目录名称跳过，本地项目和配置仓库中的扫描都会生效。默认值与项目发现忽略项相同：
+
+```json
+[
+  "node_modules",
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+  ".pnpm-store"
+]
+```
+
+该配置用于减少大型项目的遍历和内存占用；嵌套 Git 项目根目录及插件内部元数据始终排除。
 
 ### `envSync.notificationLevel`
 
@@ -425,7 +419,7 @@ echo "B=2" > config/.env.dev
 - 不支持虚拟工作区
 - 扩展不会替你创建 GitHub 仓库
 - 提交前不会对 secrets 做加密
-- 项目映射规则固定为 `origin + 当前分支 -> projects/<host>/<owner>/<repo>/branches/<编码分支名>/`
+- 项目映射使用完整 origin 与当前分支的哈希目录，不提供自定义存储布局
 - 旧版本扩展仍可读取保留下来的旧共享文件，但无法读取按分支保存的新数据
 
 ## Release Notes

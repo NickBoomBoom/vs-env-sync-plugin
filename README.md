@@ -19,60 +19,37 @@ Use it when you want a single private repo to back up, share, and restore `.env`
 
 ## How It Works
 
-Env Sync scans the current workspace folder for Git projects up to a configurable depth and reads each discovered project's `remote.origin.url` and current branch.
+Env Sync scans the current workspace folder for Git projects up to a configurable depth and reads each discovered project's `remote.origin.url` and current branch. Project identities preserve the full group path, such as `gitlab.com/group/subgroup/app`, so nested GitLab groups cannot collide.
 
-Each Git project is normalized to:
-
-```text
-github.com/<owner>/<repo>
-```
-
-Examples:
-
-- `git@github.com:team/app.git`
-- `https://github.com/team/app.git`
-- `ssh://git@github.com/team/app.git`
-
-All map to:
+Current branch data is isolated with SHA-256 hashes of the full project path and branch name:
 
 ```text
-github.com/team/app
+projects/<host>/<project-path-hash>/branches/<branch-name-hash>/
 ```
 
-Inside the config repository, files for the current branch are stored at:
+These directories prevent collisions between nested groups, branch names with different case, and case-insensitive file systems. Logs and prompts still use readable origin and branch names.
 
-```text
-projects/<host>/<owner>/<repo>/branches/<encoded-branch>/
-```
-
-The branch name is encoded with `encodeURIComponent`, so slashes stay within one directory segment. For example:
-
-```text
-projects/github.com/team/app/branches/main/.env.local
-projects/github.com/team/app/branches/feature%2Flogin/config/.env.dev
-```
-
-For backward compatibility, when a branch directory does not exist, matching files from the legacy shared directory `projects/<host>/<owner>/<repo>/` are copied into it and committed. The legacy files remain unchanged. Once the branch directory exists, only that directory is synchronized. Projects in detached HEAD state are skipped because no branch name is available.
+For backward compatibility, matching files are inherited from the legacy branch directory `projects/<host>/<owner>/<repo>/branches/<encoded-branch>/` or the older shared project directory. An initialization marker makes interrupted migrations resumable. Once initialization completes, legacy directories are no longer read, so deleted files are not revived and legacy files remain unchanged. Projects in detached HEAD state are skipped because no branch name is available.
 
 ## Sync Behavior
 
 On workspace open:
 
 - Search for Git projects under the current workspace folder and resolve their current branches
-- Initialize a missing branch directory from matching legacy shared files, if any
-- Remote exists, local missing: pull remote file into that Git project's root
-- Local exists, remote missing: prompt `上传本地文件` or `跳过`
-- Both exist and are identical: do nothing
-- Both exist and differ: prompt `拉取远端文件`, `上传本地文件`, or `跳过`
+- Resolve the current branch again before every sync and initialize missing branch stores with resumable legacy migration
+- Keep a per-device baseline of successfully synchronized files and compare local, remote, and baseline state
+- Remote-only additions or edits are pulled; remote-only deletions remove the local file
+- Local-only additions or edits are uploaded; a remote file is deleted only when the baseline proves it was deleted locally
+- Divergent changes prompt `拉取远端文件`, `上传本地文件`, or `跳过`
+- Skipping keeps the old baseline, so saving another file cannot silently overwrite the skipped conflict
 
 On local file change:
 
-- Matched file create or change events are debounced for 3 seconds
-- Changes are mirrored into the config repository
-- The config repository is committed and pushed automatically
-- Deletes are mirrored to the config repository too
-
-All sync jobs run through a single serial queue so multiple workspaces or nested projects do not race on the same config repository clone.
+- Matched create, change, and delete events are debounced for 3 seconds
+- Commits are limited to the current project branch directory and pushed automatically
+- Rejected pushes are retried with fetch/rebase, and existing unpushed commits are retried by later syncs
+- Multiple VS Code windows serialize access to the same config clone with a cross-process lock
+- Real worktree HEAD files are watched, and extension writes are distinguished from user edits by content hash
 
 ## Status Bar And Errors
 
@@ -178,6 +155,23 @@ Default:
 ```
 
 This setting only affects Git project discovery. It is useful when you open a large parent folder and want Env Sync to ignore generated output or package-store directories.
+
+### `envSync.syncIgnoreDirectories`
+
+Directory names skipped while scanning local projects and the config repository for env files. The default matches the project-discovery ignore list:
+
+```json
+[
+  "node_modules",
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+  ".pnpm-store"
+]
+```
+
+Use this setting to reduce traversal and memory usage in large projects. Nested Git project roots and internal Env Sync metadata are always excluded.
 
 ### `envSync.notificationLevel`
 
@@ -423,7 +417,7 @@ Open the test project in the extension host, initialize the config repo, and val
 - Virtual workspaces are not supported
 - The extension does not create the GitHub repository for you
 - The extension does not encrypt secrets before commit
-- Project mapping is fixed to `origin + current branch -> projects/<host>/<owner>/<repo>/branches/<encoded-branch>/`
+- Project mapping uses hash directories derived from the full origin and current branch; the storage layout is not customizable
 - Older extension versions can still read the preserved legacy shared files, but cannot read branch-specific data
 
 ## Release Notes

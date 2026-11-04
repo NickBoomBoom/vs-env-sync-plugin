@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Added per-device three-way sync baselines so remote additions from other devices are never mistaken for local deletions.
+- Added persistent conflict-skip behavior, safe local/remote deletion handling, and recovery for interrupted commits and pushes.
+- Added full project identities, collision-safe hashed storage, resumable legacy migration, and path containment checks.
+- Scoped config commits to the current project branch and preserved unrelated staged changes and local branch commits.
+- Added cross-process locking for shared config clones and safe retry of unpushed commits.
+- Added worktree HEAD tracking, content-based watcher suppression, and coalesced session refreshes.
+- Added `envSync.syncIgnoreDirectories`, streaming file scans, and credential redaction in logs and errors.
+- Avoided `FETCH_HEAD` races by rebasing explicitly onto the configured remote branch.
+
+## 0.2.1
+
+- Fixed stack overflow when scanning projects with very large file trees.
+- Preserved uncommitted config-repository changes during checkout and rebase with autostash.
+
+## 0.2.0
+
+- Added branch-specific env storage and legacy shared-data inheritance.
+- Added current-branch discovery and detached HEAD safeguards.
+
 ## 0.1.2
 
 - Added status bar sync feedback with compact icon-only states.

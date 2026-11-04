@@ -5,7 +5,7 @@ import * as vscode from "vscode";
 import { ConfigRepoManager } from "./core/configRepoManager";
 import { EnvSyncEngine } from "./core/envSyncEngine";
 import { summarizeSyncError } from "./core/errorSummary";
-import { GitCli } from "./core/git";
+import { GitCli, redactRepoUrl } from "./core/git";
 import {
   compilePathRegexes,
   matchesWorkspaceRelativePath,
@@ -23,6 +23,7 @@ import {
   DEFAULT_GIT_PROJECT_SEARCH_DEPTH,
   DEFAULT_NOTIFICATION_LEVEL,
   DEFAULT_PATH_REGEXES,
+  DEFAULT_SYNC_IGNORE_DIRECTORIES,
   EXTENSION_NAMESPACE,
   Logger,
   NotificationLevel,
@@ -36,6 +37,7 @@ interface SessionSyncSettings {
   pathRegexes: RegExp[];
   gitProjectSearchDepth: number;
   gitProjectIgnoreDirectories: string[];
+  syncIgnoreDirectories: string[];
   notificationLevel: NotificationLevel;
 }
 
@@ -450,7 +452,8 @@ class WorkspaceSession implements vscode.Disposable {
     const cacheKey = JSON.stringify({
       pathRegexSources: syncSettings.pathRegexSources,
       gitProjectSearchDepth: syncSettings.gitProjectSearchDepth,
-      gitProjectIgnoreDirectories: syncSettings.gitProjectIgnoreDirectories
+      gitProjectIgnoreDirectories: syncSettings.gitProjectIgnoreDirectories,
+      syncIgnoreDirectories: syncSettings.syncIgnoreDirectories
     });
     if (this.cachedContexts && this.cachedContextKey === cacheKey) {
       return this.cachedContexts;
@@ -495,7 +498,8 @@ class WorkspaceSession implements vscode.Disposable {
           project,
           pathRegexSources: syncSettings.pathRegexSources,
           pathRegexes: syncSettings.pathRegexes,
-          ignoredProjectRoots
+          ignoredProjectRoots,
+          ignoredDirectoryNames: syncSettings.syncIgnoreDirectories
         }];
       });
     })();
@@ -554,6 +558,10 @@ class WorkspaceSession implements vscode.Disposable {
       "gitProjectIgnoreDirectories",
       [...DEFAULT_GIT_PROJECT_IGNORE_DIRECTORIES]
     );
+    const configuredSyncIgnoredDirectories = configuration.get<string[]>(
+      "syncIgnoreDirectories",
+      [...DEFAULT_SYNC_IGNORE_DIRECTORIES]
+    );
     const configuredNotificationLevel = configuration.get<NotificationLevel>(
       "notificationLevel",
       DEFAULT_NOTIFICATION_LEVEL
@@ -580,12 +588,16 @@ class WorkspaceSession implements vscode.Disposable {
     const gitProjectIgnoreDirectories = configuredIgnoredDirectories
       .map((directoryName) => directoryName.trim())
       .filter((directoryName, index, directories) => directoryName.length > 0 && directories.indexOf(directoryName) === index);
+    const syncIgnoreDirectories = configuredSyncIgnoredDirectories
+      .map((directoryName) => directoryName.trim())
+      .filter((directoryName, index, directories) => directoryName.length > 0 && directories.indexOf(directoryName) === index);
 
     return {
       pathRegexSources,
       pathRegexes,
       gitProjectSearchDepth: Number.isFinite(configuredDepth) ? Math.max(0, Math.floor(configuredDepth)) : DEFAULT_GIT_PROJECT_SEARCH_DEPTH,
       gitProjectIgnoreDirectories,
+      syncIgnoreDirectories,
       notificationLevel: configuredNotificationLevel
     };
   }
@@ -760,7 +772,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await currentConfiguration.update("configRepoUrl", settings.repoUrl, vscode.ConfigurationTarget.Global);
       await currentConfiguration.update("configRepoBranch", settings.branch, vscode.ConfigurationTarget.Global);
       void vscode.window.showInformationMessage("Env Sync 配置仓库已保存。");
-      logger.info(`已配置仓库 ${settings.repoUrl}，分支 ${settings.branch}。`);
+      logger.info(`已配置仓库 ${redactRepoUrl(settings.repoUrl)}，分支 ${settings.branch}。`);
       await coordinator.refreshSessions();
     } catch (error) {
       const summary = summarizeSyncError(error, "配置仓库校验");

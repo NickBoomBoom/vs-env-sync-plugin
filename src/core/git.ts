@@ -5,6 +5,29 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const TOKEN_QUERY_PARAMETERS = new Set(["access_token", "token", "private_token", "auth", "key"]);
+
+export function redactRepoUrl(value: string): string {
+  return value.replace(/(?:https?|ssh):\/\/[^\s<>"']+/gi, (rawUrl) => {
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.username) {
+        parsed.username = "REDACTED";
+      }
+      if (parsed.password) {
+        parsed.password = "REDACTED";
+      }
+      for (const key of TOKEN_QUERY_PARAMETERS) {
+        if (parsed.searchParams.has(key)) {
+          parsed.searchParams.set(key, "REDACTED");
+        }
+      }
+      return parsed.toString();
+    } catch {
+      return rawUrl;
+    }
+  });
+}
 
 export class GitCommandError extends Error {
   constructor(
@@ -41,12 +64,12 @@ export class GitCli {
         code?: number;
       };
       throw new GitCommandError(
-        `git ${args.join(" ")} failed`,
-        failed.stderr ?? "",
-        failed.stdout ?? "",
+        `git ${redactRepoUrl(args.join(" "))} failed`,
+        redactRepoUrl(failed.stderr ?? ""),
+        redactRepoUrl(failed.stdout ?? ""),
         typeof failed.code === "number" ? failed.code : undefined,
         typeof failed.code === "string" ? failed.code : undefined,
-        failed.message ?? ""
+        redactRepoUrl(failed.message ?? "")
       );
     }
   }

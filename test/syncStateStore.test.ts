@@ -21,7 +21,8 @@ function createContext(workspacePath: string, branch = "main"): WorkspaceSyncCon
     },
     pathRegexSources: ["^\\.env[^/]*$"],
     pathRegexes: compilePathRegexes(["^\\.env[^/]*$"]),
-    ignoredProjectRoots: []
+    ignoredProjectRoots: [],
+    ignoredDirectoryNames: []
   };
 }
 

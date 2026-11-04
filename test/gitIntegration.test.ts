@@ -74,7 +74,8 @@ function createContext(workspacePath: string): WorkspaceSyncContext {
     },
     pathRegexSources: ["^\\.env[^/]*$"],
     pathRegexes: compilePathRegexes(["^\\.env[^/]*$"]),
-    ignoredProjectRoots: []
+    ignoredProjectRoots: [],
+    ignoredDirectoryNames: []
   };
 }
 

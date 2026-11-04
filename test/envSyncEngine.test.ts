@@ -55,7 +55,8 @@ function createContext(workspacePath: string): WorkspaceSyncContext {
     },
     pathRegexSources: ["^\\.env[^/]*$"],
     pathRegexes: compilePathRegexes(["^\\.env[^/]*$"]),
-    ignoredProjectRoots: []
+    ignoredProjectRoots: [],
+    ignoredDirectoryNames: []
   };
 }
 
@@ -599,6 +600,37 @@ describe("EnvSyncEngine", () => {
     assert.deepEqual(await stateStore.read(settings, context), new Map([[".env", oldHash]]));
     await engine.syncLocalChanges(settings, context);
     assert.deepEqual(await stateStore.read(settings, context), new Map([[".env", newHash]]));
+  });
+
+  it("prunes ignored directories and internal files from synchronization", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-scan-ignore-"));
+    const workspacePath = path.join(root, "workspace");
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    await fs.mkdir(path.join(workspacePath, "ignored"), { recursive: true });
+    await fs.mkdir(path.join(workspacePath, "nested"), { recursive: true });
+    await fs.writeFile(path.join(workspacePath, "ignored", ".env.secret"), "IGNORED=1\n");
+    await fs.writeFile(path.join(workspacePath, "nested", ".env.nested"), "NESTED=1\n");
+    await fs.writeFile(path.join(workspacePath, ".env.local"), "LOCAL=1\n");
+    await fs.writeFile(path.join(workspacePath, "env-sync-branch.json"), "INTERNAL=1\n");
+
+    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), new StaticPrompts(), new InMemoryLogger());
+    const result = await engine.syncLocalChanges(
+      { repoUrl: "git@github.com:team/env-config.git", branch: "main" },
+      {
+        ...createContext(workspacePath),
+        pathRegexSources: ["^.*$"],
+        pathRegexes: compilePathRegexes(["^.*$"]),
+        ignoredProjectRoots: ["nested"],
+        ignoredDirectoryNames: ["ignored"]
+      }
+    );
+
+    assert.deepEqual(result.pushedPaths, [".env.local"]);
+    assert.equal(await fs.readFile(path.join(remoteStorePath, ".env.local"), "utf8"), "LOCAL=1\n");
+    await assert.rejects(fs.access(path.join(remoteStorePath, "ignored", ".env.secret")));
+    await assert.rejects(fs.access(path.join(remoteStorePath, "nested", ".env.nested")));
+    assert.equal(await fs.readFile(path.join(remoteStorePath, "env-sync-branch.json"), "utf8"), "{\"version\":1}\n");
   });
 
   it("pushes env changes when a project contains many non-matching files", async function () {

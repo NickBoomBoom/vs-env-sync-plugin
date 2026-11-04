@@ -10,6 +10,7 @@ export const DEFAULT_GIT_PROJECT_IGNORE_DIRECTORIES = [
   ".turbo",
   ".pnpm-store"
 ] as const;
+export const DEFAULT_SYNC_IGNORE_DIRECTORIES = [...DEFAULT_GIT_PROJECT_IGNORE_DIRECTORIES] as const;
 export const DEFAULT_CONFIG_REPO_BRANCH = "main";
 export const DEFAULT_NOTIFICATION_LEVEL = "summary" as const;
 
@@ -42,6 +43,7 @@ export interface WorkspaceSyncContext {
   pathRegexSources: string[];
   pathRegexes: RegExp[];
   ignoredProjectRoots: string[];
+  ignoredDirectoryNames: string[];
 }
 
 export interface RemoteFileState {

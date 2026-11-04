@@ -103,6 +103,21 @@
           },
           "description": "在工作区根目录下递归搜索 Git 项目时要跳过的目录名称。"
         },
+        "envSync.syncIgnoreDirectories": {
+          "type": "array",
+          "default": [
+            "node_modules",
+            "dist",
+            "build",
+            ".next",
+            ".turbo",
+            ".pnpm-store"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "扫描要同步的 env 文件时按目录名称跳过，避免遍历依赖和构建目录。"
+        },
         "envSync.notificationLevel": {
           "type": "string",
           "enum": [
