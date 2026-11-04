@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,11 @@ import { EnvSyncEngine } from "../src/core/envSyncEngine";
 import { GitCli } from "../src/core/git";
 import { compilePathRegexes } from "../src/core/pathRegex";
 import { Logger, SyncPrompts, WorkspaceSyncContext } from "../src/core/types";
+
+function hashedBranchFile(branch: string, ...relativePaths: string[]): string {
+  const hash = (value: string) => createHash("sha256").update(`v1:${value}`).digest("hex");
+  return path.join("projects", "github.com", hash("team/app"), "branches", hash(branch), ...relativePaths);
+}
 
 class TestLogger implements Logger {
   info(): void {}
@@ -62,6 +68,7 @@ function createContext(workspacePath: string): WorkspaceSyncContext {
       host: "github.com",
       owner: "team",
       repo: "app",
+      path: "team/app",
       slug: "github.com/team/app"
     },
     pathRegexSources: ["^\\.env[^/]*$"],
@@ -79,7 +86,7 @@ describe("git integration", () => {
     await createInitialCommit(
       seedClone,
       gitCli,
-      path.join("projects", "github.com", "team", "app", "branches", "main", ".env.local"),
+      hashedBranchFile("main", ".env.local"),
       "REMOTE=1\n"
     );
 
@@ -116,7 +123,7 @@ describe("git integration", () => {
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
     await git(gitCli, verifyClone, "checkout", "main");
     assert.equal(
-      await fs.readFile(path.join(verifyClone, "projects", "github.com", "team", "app", "branches", "main", ".env.local"), "utf8"),
+      await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env.local")), "utf8"),
       "REMOTE=2\n"
     );
   });
@@ -147,7 +154,7 @@ describe("git integration", () => {
 
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
     const legacyFile = path.join(verifyClone, "projects", "github.com", "team", "app", ".env.local");
-    const branchFile = path.join(verifyClone, "projects", "github.com", "team", "app", "branches", "main", ".env.local");
+    const branchFile = path.join(verifyClone, hashedBranchFile("main", ".env.local"));
     assert.equal(await fs.readFile(legacyFile, "utf8"), "SHARED=1\n");
     assert.equal(await fs.readFile(branchFile, "utf8"), "SHARED=1\n");
   });
@@ -197,7 +204,7 @@ describe("git integration", () => {
     );
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
     assert.equal(
-      await fs.readFile(path.join(verifyClone, "projects", "github.com", "team", "app", "branches", "main", ".env"), "utf8"),
+      await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env")), "utf8"),
       "LOCAL=2\n"
     );
   });

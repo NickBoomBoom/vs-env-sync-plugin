@@ -23,6 +23,7 @@ export interface RepoIdentity {
   host: string;
   owner: string;
   repo: string;
+  path: string;
   slug: string;
 }
 

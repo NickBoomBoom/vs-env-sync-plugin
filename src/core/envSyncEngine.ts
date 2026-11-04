@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { ConfigRepoManager, ReadyConfigRepo } from "./configRepoManager";
 import { pathExists, readMatchingFiles, removeFileIfExists, writeFileEnsuringDir, pruneEmptyDirectories } from "./fileStore";
+import { assertPathInside, branchMetadataPath, branchStorePath } from "./storagePaths";
 import {
   ConfigRepoSettings,
   Logger,
@@ -15,12 +16,14 @@ function bufferEquals(left: Buffer, right: Buffer): boolean {
   return left.equals(right);
 }
 
-function projectStorePath(repoPath: string, context: WorkspaceSyncContext): string {
-  return path.join(repoPath, "projects", context.project.host, context.project.owner, context.project.repo);
+function legacyProjectStorePath(repoPath: string, context: WorkspaceSyncContext): string {
+  const target = path.join(repoPath, "projects", context.project.host, context.project.owner, context.project.repo);
+  assertPathInside(repoPath, target);
+  return target;
 }
 
-function branchStorePath(repoPath: string, context: WorkspaceSyncContext): string {
-  return path.join(projectStorePath(repoPath, context), "branches", encodeURIComponent(context.branch));
+function legacyBranchStorePath(repoPath: string, context: WorkspaceSyncContext): string {
+  return path.join(legacyProjectStorePath(repoPath, context), "branches", encodeURIComponent(context.branch));
 }
 
 async function prepareBranchStore(
@@ -28,20 +31,29 @@ async function prepareBranchStore(
   context: WorkspaceSyncContext
 ): Promise<{ remoteRoot: string; inherited: boolean }> {
   const remoteRoot = branchStorePath(repo.repoPath, context);
-  if (await pathExists(remoteRoot)) {
+  const metadataPath = branchMetadataPath(repo.repoPath, context);
+  if (await pathExists(metadataPath)) {
     return { remoteRoot, inherited: false };
   }
 
-  const legacyRoot = projectStorePath(repo.repoPath, context);
-  const legacyFiles = await readMatchingFiles(legacyRoot, context.pathRegexes, [
-    ...context.ignoredProjectRoots,
-    "branches"
-  ]);
-  for (const [relativePath, content] of legacyFiles) {
-    await writeFileEnsuringDir(path.join(remoteRoot, relativePath), content);
+  const legacyRoot = legacyProjectStorePath(repo.repoPath, context);
+  const sources = [
+    { root: legacyBranchStorePath(repo.repoPath, context), ignoredRoots: context.ignoredProjectRoots },
+    { root: legacyRoot, ignoredRoots: [...context.ignoredProjectRoots, "branches"] }
+  ];
+  for (const source of sources) {
+    const legacyFiles = await readMatchingFiles(source.root, context.pathRegexes, source.ignoredRoots);
+    for (const [relativePath, content] of legacyFiles) {
+      const targetPath = path.join(remoteRoot, relativePath);
+      assertPathInside(remoteRoot, targetPath);
+      if (!(await pathExists(targetPath))) {
+        await writeFileEnsuringDir(targetPath, content);
+      }
+    }
   }
 
-  return { remoteRoot, inherited: legacyFiles.size > 0 };
+  await writeFileEnsuringDir(metadataPath, Buffer.from("{\"version\":1}\n"));
+  return { remoteRoot, inherited: true };
 }
 
 function commitMessage(context: WorkspaceSyncContext): string {

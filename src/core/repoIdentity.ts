@@ -4,20 +4,40 @@ function stripGitSuffix(value: string): string {
   return value.endsWith(".git") ? value.slice(0, -4) : value;
 }
 
-function cleanSegment(value: string): string {
-  return value.replace(/^\/+/, "").replace(/\/+$/, "");
+function validSegment(segment: string): boolean {
+  return segment.length > 0 && segment !== "." && segment !== ".." && !/[\\\\\u0000-\u001f/]/.test(segment);
 }
 
-function toRepoIdentity(host: string, owner: string, repo: string): RepoIdentity {
+function validHost(host: string): boolean {
+  return host.length > 0 && host !== "." && host !== ".." && !/[\\\\\u0000-\u001f/]/.test(host);
+}
+
+function toRepoIdentity(host: string, rawSegments: readonly string[]): RepoIdentity | undefined {
   const normalizedHost = host.toLowerCase();
-  const normalizedOwner = cleanSegment(owner);
-  const normalizedRepo = cleanSegment(stripGitSuffix(repo));
+  const segments = [...rawSegments];
+  if (!validHost(normalizedHost) || segments.length < 2) {
+    return undefined;
+  }
+
+  segments[segments.length - 1] = stripGitSuffix(segments[segments.length - 1]);
+  if (!segments.every(validSegment)) {
+    return undefined;
+  }
+
+  const projectPath = segments.join("/");
   return {
     host: normalizedHost,
-    owner: normalizedOwner,
-    repo: normalizedRepo,
-    slug: `${normalizedHost}/${normalizedOwner}/${normalizedRepo}`
+    owner: segments[segments.length - 2],
+    repo: segments[segments.length - 1],
+    path: projectPath,
+    slug: `${normalizedHost}/${projectPath}`
   };
+}
+
+function pathSegments(value: string): string[] | undefined {
+  const trimmed = value.replace(/^\/+/, "").replace(/\/+$/, "");
+  const segments = trimmed.split("/");
+  return segments.every((segment) => segment.length > 0) ? segments : undefined;
 }
 
 function parseScpLikeOrigin(originUrl: string): RepoIdentity | undefined {
@@ -26,24 +46,19 @@ function parseScpLikeOrigin(originUrl: string): RepoIdentity | undefined {
     return undefined;
   }
 
-  const [, host, remainder] = match;
-  const parts = cleanSegment(remainder).split("/").filter(Boolean);
-  if (parts.length < 2) {
-    return undefined;
-  }
-
-  return toRepoIdentity(host, parts[parts.length - 2], parts[parts.length - 1]);
+  const segments = pathSegments(match[2]);
+  return segments ? toRepoIdentity(match[1], segments) : undefined;
 }
 
 function parseUrlOrigin(originUrl: string): RepoIdentity | undefined {
   try {
     const parsed = new URL(originUrl);
-    const segments = cleanSegment(parsed.pathname).split("/").filter(Boolean);
-    if (segments.length < 2) {
+    const rawSegments = pathSegments(parsed.pathname);
+    if (!rawSegments) {
       return undefined;
     }
-
-    return toRepoIdentity(parsed.hostname, segments[segments.length - 2], segments[segments.length - 1]);
+    const segments = rawSegments.map((segment) => decodeURIComponent(segment));
+    return toRepoIdentity(parsed.hostname, segments);
   } catch {
     return undefined;
   }
