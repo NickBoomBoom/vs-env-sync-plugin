@@ -43,6 +43,10 @@ describe("SyncStateStore", () => {
     assert.deepEqual(await store.read({ ...settings, branch: "backup" }, context), new Map());
     assert.deepEqual(await store.read(settings, createContext(workspace, "feature")), new Map());
     assert.deepEqual(await store.read(settings, createContext(otherWorkspace)), new Map());
+    assert.deepEqual(await store.read(settings, {
+      ...context,
+      project: { ...context.project, host: "gitlab.com", slug: "gitlab.com/team/app" }
+    }), new Map());
 
     const stateDirectory = path.join(root, "sync-state");
     assert.equal((await fs.readdir(stateDirectory)).length, 1);

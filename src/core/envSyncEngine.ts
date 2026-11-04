@@ -268,7 +268,7 @@ export class EnvSyncEngine {
       this.logger.info(`打开工作区同步已上传 ${result.uploadedPaths.length} 个文件；已提交：${result.committed ? "是" : "否"}。`);
     }
     if (this.stateStore) {
-      await this.stateStore.write(settings, context, nextBaseline);
+      await this.stateStore.write(settings, context, nextBaseline, !(contextChanged && result.skippedPaths.length > 0));
     }
     return result;
   }

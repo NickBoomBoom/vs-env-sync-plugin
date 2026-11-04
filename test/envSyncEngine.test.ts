@@ -709,6 +709,36 @@ describe("EnvSyncEngine", () => {
     assert.equal(await fs.readFile(path.join(workspacePath, ".env"), "utf8"), "A=1\n");
   });
 
+  it("keeps a skipped branch-switch conflict in context-switch mode", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-branch-skip-"));
+    const workspacePath = path.join(root, "workspace");
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteA = hashedBranchStorePath(remoteGitRoot);
+    const remoteB = hashedBranchStorePath(remoteGitRoot, "feature");
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const contextA = createContext(workspacePath);
+    const contextB = { ...contextA, branch: "feature" };
+    const stateStore = new SyncStateStore(path.join(root, "state"));
+    await initializeBranchStore(remoteA);
+    await initializeBranchStore(remoteB);
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(remoteA, ".env"), "A=1\n");
+    await fs.writeFile(path.join(remoteB, ".env"), "B=1\n");
+    await fs.writeFile(path.join(workspacePath, ".env"), "A=1\n");
+    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), new StaticPrompts("skip", "skip"), new InMemoryLogger(), stateStore);
+
+    await engine.syncOnWorkspaceOpen(settings, contextA);
+    await engine.syncOnWorkspaceOpen(settings, contextB);
+    await fs.writeFile(path.join(workspacePath, ".env"), "B=1\n");
+    const first = await engine.syncLocalChanges(settings, contextA);
+    const second = await engine.syncLocalChanges(settings, contextA);
+
+    assert.deepEqual(first.skippedPaths, [".env"]);
+    assert.deepEqual(second.skippedPaths, [".env"]);
+    assert.deepEqual(second.pushedPaths, []);
+    assert.equal(await fs.readFile(path.join(remoteA, ".env"), "utf8"), "A=1\n");
+  });
+
   it("prunes ignored directories and internal files from synchronization", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-scan-ignore-"));
     const workspacePath = path.join(root, "workspace");

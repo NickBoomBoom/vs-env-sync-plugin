@@ -87,8 +87,7 @@ export class FileLock {
         continue;
       }
       if (!currentOwner && (await this.initializationExpired(lockPath))) {
-        await this.removeDeadLock(lockPath, undefined);
-        continue;
+        throw new Error(`配置仓库锁文件损坏，请手动清理：${lockPath}`);
       }
       await delay(this.retryDelayMs);
     }

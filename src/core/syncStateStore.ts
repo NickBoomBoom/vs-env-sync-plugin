@@ -12,6 +12,7 @@ interface SyncState {
 interface LastContext {
   repoBranch: string;
   projectBranch: string;
+  pending?: boolean;
 }
 
 export class SyncStateStore {
@@ -47,7 +48,7 @@ export class SyncStateStore {
     const contextPath = await this.lastContextPath(settings, context);
     try {
       const last = JSON.parse(await fs.readFile(contextPath, "utf8")) as LastContext;
-      return last.repoBranch !== settings.branch || last.projectBranch !== context.branch;
+      return last.pending === true || last.repoBranch !== settings.branch || last.projectBranch !== context.branch;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return false;
@@ -59,7 +60,8 @@ export class SyncStateStore {
   async write(
     settings: ConfigRepoSettings,
     context: WorkspaceSyncContext,
-    files: ReadonlyMap<string, string>
+    files: ReadonlyMap<string, string>,
+    updateContext = true
   ): Promise<void> {
     const statePath = await this.statePath(settings, context);
     const state: SyncState = {
@@ -69,7 +71,8 @@ export class SyncStateStore {
     await this.writeJson(statePath, state);
     const lastContext: LastContext = {
       repoBranch: settings.branch,
-      projectBranch: context.branch
+      projectBranch: context.branch,
+      pending: !updateContext
     };
     await this.writeJson(await this.lastContextPath(settings, context), lastContext);
   }
@@ -84,10 +87,11 @@ export class SyncStateStore {
   private async statePath(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<string> {
     const workspacePath = await fs.realpath(context.workspacePath);
     const key = JSON.stringify({
-      version: 1,
+      version: 2,
       repoUrl: settings.repoUrl,
       repoBranch: settings.branch,
       workspacePath,
+      projectHost: context.project.host,
       projectPath: context.project.path,
       projectBranch: context.branch
     });
@@ -98,9 +102,10 @@ export class SyncStateStore {
   private async lastContextPath(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<string> {
     const workspacePath = await fs.realpath(context.workspacePath);
     const key = JSON.stringify({
-      version: 1,
+      version: 2,
       repoUrl: settings.repoUrl,
       workspacePath,
+      projectHost: context.project.host,
       projectPath: context.project.path
     });
     const hash = createHash("sha256").update(key).digest("hex");

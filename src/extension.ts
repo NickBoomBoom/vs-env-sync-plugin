@@ -274,6 +274,7 @@ class WorkspaceSession implements vscode.Disposable {
           return;
         }
 
+        let allProjectsSucceeded = true;
         for (const cachedContext of contexts) {
           const context = await this.refreshContextBranch(cachedContext);
           if (!context) {
@@ -297,10 +298,11 @@ class WorkspaceSession implements vscode.Disposable {
               syncSummary.length > 0
             );
           } catch (error) {
+            allProjectsSucceeded = false;
             this.handleError(error, `打开工作区同步（${context.workspaceName}）`);
           }
         }
-        completedSuccessfully = true;
+        completedSuccessfully = allProjectsSucceeded;
       } catch (error) {
         this.handleError(error, "打开工作区同步");
       } finally {

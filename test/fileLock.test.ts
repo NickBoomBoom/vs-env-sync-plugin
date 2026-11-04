@@ -78,7 +78,7 @@ describe("FileLock", () => {
     assert.equal(await lock.runExclusive("repo", async () => "recovered"), "recovered");
   });
 
-  it("recovers an empty lock left by an initialization crash", async () => {
+  it("rejects a corrupt lock instead of racing to take it over", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-empty-"));
     const lockPath = path.join(root, "locks", `${createHash("sha256").update("repo").digest("hex")}.lock`);
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
@@ -86,7 +86,7 @@ describe("FileLock", () => {
     await fs.utimes(lockPath, new Date(0), new Date(0));
     const lock = new FileLock(root, { retryDelayMs: 5, heartbeatIntervalMs: 10, initializationTimeoutMs: 10 });
 
-    assert.equal(await lock.runExclusive("repo", async () => "recovered"), "recovered");
+    await assert.rejects(lock.runExclusive("repo", async () => "unreachable"), /锁文件损坏.*手动清理/);
   });
 
   it("does not remove a newly acquired lock while racing to recover a dead owner", async () => {
