@@ -61,13 +61,20 @@ export type ConflictDecision = "pull" | "upload" | "skip";
 
 export interface SyncPrompts {
   chooseLocalOnly(context: WorkspaceSyncContext, relativePath: string): Promise<LocalOnlyDecision>;
-  chooseConflict(context: WorkspaceSyncContext, relativePath: string): Promise<ConflictDecision>;
+  chooseConflict(
+    context: WorkspaceSyncContext,
+    relativePath: string,
+    localExists?: boolean,
+    remoteExists?: boolean
+  ): Promise<ConflictDecision>;
 }
 
 export interface OpenSyncResult {
   uploadedPaths: string[];
   pulledPaths: string[];
   skippedPaths: string[];
+  deletedPaths?: string[];
+  deletedLocalPaths?: string[];
 }
 
 export interface PushSyncResult {

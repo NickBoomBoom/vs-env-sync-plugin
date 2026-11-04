@@ -57,28 +57,36 @@ export class FileLock {
   private async acquire(lockPath: string, ownerId: string): Promise<void> {
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
     while (true) {
+      const owner: LockOwner = { pid: process.pid, ownerId };
+      const temporaryPath = `${lockPath}.${process.pid}.${ownerId}.tmp`;
+      let linked = false;
       try {
-        await fs.mkdir(lockPath);
-        try {
-          const owner: LockOwner = { pid: process.pid, ownerId };
-          await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(owner));
-          return;
-        } catch (error) {
-          await fs.rm(lockPath, { recursive: true, force: true });
-          throw error;
-        }
+        await fs.writeFile(temporaryPath, JSON.stringify(owner));
+        await fs.link(temporaryPath, lockPath);
+        linked = true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          await fs.rm(temporaryPath, { force: true });
           throw error;
         }
+      } finally {
+        await fs.rm(temporaryPath, { force: true });
       }
 
-      const owner = await this.readOwner(lockPath);
-      if (owner && !processIsAlive(owner.pid)) {
-        await this.removeDeadLock(lockPath, owner.ownerId);
+      if (linked) {
+        const confirmedOwner = await this.readOwner(lockPath);
+        if (confirmedOwner?.ownerId === ownerId) {
+          return;
+        }
         continue;
       }
-      if (!owner && (await this.initializationExpired(lockPath))) {
+
+      const currentOwner = await this.readOwner(lockPath);
+      if (currentOwner && !processIsAlive(currentOwner.pid)) {
+        await this.removeDeadLock(lockPath, currentOwner.ownerId);
+        continue;
+      }
+      if (!currentOwner && (await this.initializationExpired(lockPath))) {
         await this.removeDeadLock(lockPath, undefined);
         continue;
       }
@@ -88,7 +96,7 @@ export class FileLock {
 
   private async readOwner(lockPath: string): Promise<LockOwner | undefined> {
     try {
-      return JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as LockOwner;
+      return JSON.parse(await fs.readFile(lockPath, "utf8")) as LockOwner;
     } catch {
       return undefined;
     }
@@ -122,26 +130,20 @@ export class FileLock {
       : movedOwner === undefined;
     if (!removedExpectedOwner) {
       try {
-        await fs.rename(stalePath, lockPath);
+        await fs.link(stalePath, lockPath);
       } catch {
         // Another waiter may already have restored or replaced the lock.
       }
+      await fs.rm(stalePath, { force: true });
       return;
     }
-    await fs.rm(stalePath, { recursive: true, force: true });
+    await fs.rm(stalePath, { force: true });
   }
 
   private async release(lockPath: string, ownerId: string): Promise<void> {
-    try {
-      const owner = await this.readOwner(lockPath);
-      if (owner?.ownerId === ownerId) {
-        await fs.unlink(path.join(lockPath, "owner.json"));
-        await fs.rmdir(lockPath);
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
+    const owner = await this.readOwner(lockPath);
+    if (owner?.ownerId === ownerId) {
+      await fs.unlink(lockPath);
     }
   }
 }

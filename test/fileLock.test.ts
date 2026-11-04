@@ -70,8 +70,8 @@ describe("FileLock", () => {
   it("recovers a lock owned by a dead process", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-dead-"));
     const lockPath = path.join(root, "locks", `${createHash("sha256").update("repo").digest("hex")}.lock`);
-    await fs.mkdir(lockPath, { recursive: true });
-    await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid: 99_999_999, ownerId: "dead" }));
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, JSON.stringify({ pid: 99_999_999, ownerId: "dead" }));
     await fs.utimes(lockPath, new Date(0), new Date(0));
     const lock = new FileLock(root, { retryDelayMs: 5, heartbeatIntervalMs: 10 });
 
@@ -81,7 +81,8 @@ describe("FileLock", () => {
   it("recovers an empty lock left by an initialization crash", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-empty-"));
     const lockPath = path.join(root, "locks", `${createHash("sha256").update("repo").digest("hex")}.lock`);
-    await fs.mkdir(lockPath, { recursive: true });
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, "");
     await fs.utimes(lockPath, new Date(0), new Date(0));
     const lock = new FileLock(root, { retryDelayMs: 5, heartbeatIntervalMs: 10, initializationTimeoutMs: 10 });
 
@@ -92,8 +93,8 @@ describe("FileLock", () => {
     for (let iteration = 0; iteration < 20; iteration += 1) {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-recovery-race-"));
       const lockPath = path.join(root, "locks", `${createHash("sha256").update("repo").digest("hex")}.lock`);
-      await fs.mkdir(lockPath, { recursive: true });
-      await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid: 99_999_999, ownerId: "dead" }));
+      await fs.mkdir(path.dirname(lockPath), { recursive: true });
+      await fs.writeFile(lockPath, JSON.stringify({ pid: 99_999_999, ownerId: "dead" }));
       const first = new FileLock(root, { retryDelayMs: 1, heartbeatIntervalMs: 5 });
       const second = new FileLock(root, { retryDelayMs: 1, heartbeatIntervalMs: 5 });
       let active = 0;
@@ -107,5 +108,17 @@ describe("FileLock", () => {
       await Promise.all([run(first), run(second)]);
       assert.equal(maximumActive, 1);
     }
+  });
+
+  it("publishes complete owner data before starting the locked task", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-owner-"));
+    const lockPath = path.join(root, "locks", `${createHash("sha256").update("repo").digest("hex")}.lock`);
+    const lock = new FileLock(root, { retryDelayMs: 5, heartbeatIntervalMs: 10 });
+
+    await lock.runExclusive("repo", async () => {
+      const owner = JSON.parse(await fs.readFile(lockPath, "utf8")) as { pid: number; ownerId: string };
+      assert.equal(owner.pid, process.pid);
+      assert.ok(owner.ownerId.length > 0);
+    });
   });
 });

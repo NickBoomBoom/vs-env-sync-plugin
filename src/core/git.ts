@@ -17,8 +17,8 @@ export function redactRepoUrl(value: string): string {
       if (parsed.password) {
         parsed.password = "REDACTED";
       }
-      for (const key of TOKEN_QUERY_PARAMETERS) {
-        if (parsed.searchParams.has(key)) {
+      for (const [key] of parsed.searchParams) {
+        if (TOKEN_QUERY_PARAMETERS.has(key.toLowerCase())) {
           parsed.searchParams.set(key, "REDACTED");
         }
       }

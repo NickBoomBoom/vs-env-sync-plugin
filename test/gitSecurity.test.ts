@@ -52,4 +52,10 @@ describe("Git credential redaction", () => {
     assert.ok(!redacted.includes("abc"));
     assert.ok(redacted.includes("REDACTED"));
   });
+
+  it("redacts token query names case-insensitively", () => {
+    const redacted = redactRepoUrl("https://example.invalid/repo.git?PRIVATE_TOKEN=DUMMY_SECRET&Token=OTHER_SECRET");
+    assert.ok(!redacted.includes("DUMMY_SECRET"));
+    assert.ok(!redacted.includes("OTHER_SECRET"));
+  });
 });

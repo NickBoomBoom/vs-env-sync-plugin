@@ -14,6 +14,7 @@ import {
   toWorkspaceRelativePath
 } from "./core/pathRegex";
 import { LatestTaskRunner } from "./core/latestTaskRunner";
+import { processPendingProjects } from "./core/pendingProjects";
 import { SerialQueue } from "./core/serialQueue";
 import { SyncStateStore } from "./core/syncStateStore";
 import {
@@ -142,20 +143,27 @@ class VscodePrompts {
     return decision === "上传本地文件" ? "upload" : "skip";
   }
 
-  async chooseConflict(context: WorkspaceSyncContext, relativePath: string): Promise<"pull" | "upload" | "skip"> {
+  async chooseConflict(
+    context: WorkspaceSyncContext,
+    relativePath: string,
+    localExists?: boolean,
+    remoteExists?: boolean
+  ): Promise<"pull" | "upload" | "skip"> {
     const projectLabel = formatProjectLabel(context);
+    const pullLabel = remoteExists === false ? "接受远端删除" : "拉取远端文件";
+    const uploadLabel = localExists === false ? "删除远端文件" : "上传本地文件";
     const decision = await vscode.window.showWarningMessage(
       `Env Sync：${projectLabel} 中的 ${relativePath} 存在冲突。`,
       { modal: false },
-      "拉取远端文件",
-      "上传本地文件",
+      pullLabel,
+      uploadLabel,
       "跳过"
     );
-    if (decision === "拉取远端文件") {
+    if (decision === pullLabel) {
       return "pull";
     }
 
-    if (decision === "上传本地文件") {
+    if (decision === uploadLabel) {
       return "upload";
     }
 
@@ -271,29 +279,25 @@ class WorkspaceSession implements vscode.Disposable {
           if (!context) {
             continue;
           }
-          this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 执行打开工作区同步。`);
-          this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行打开工作区同步。`);
-          const result = await this.engine.syncOnWorkspaceOpen(settings, context, this.writeEventSuppressor);
-          const syncSummaryParts: string[] = [];
-          if (result.pulledPaths.length > 0) {
-            syncSummaryParts.push(`已拉取 ${summarizePaths(result.pulledPaths)}`);
-          }
-          if (result.uploadedPaths.length > 0) {
-            syncSummaryParts.push(`已上传 ${summarizePaths(result.uploadedPaths)}`);
-          }
-
-          if (syncSummaryParts.length > 0) {
+          try {
+            this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 执行打开工作区同步。`);
+            this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行打开工作区同步。`);
+            const result = await this.engine.syncOnWorkspaceOpen(settings, context, this.writeEventSuppressor);
+            const syncSummary = buildSyncSummary({
+              pushedPaths: result.uploadedPaths,
+              deletedPaths: result.deletedPaths ?? [],
+              pulledPaths: result.pulledPaths,
+              deletedLocalPaths: result.deletedLocalPaths ?? []
+            });
             this.showInfoNotification(
               syncSettings.notificationLevel,
-              `Env Sync 已同步 ${formatProjectLabel(context)}：${syncSummaryParts.join("；")}。`,
-              true
+              syncSummary.length > 0
+                ? `Env Sync 已同步 ${formatProjectLabel(context)}：${syncSummary}。`
+                : `Env Sync 已检查 ${formatProjectLabel(context)}：无需变更。`,
+              syncSummary.length > 0
             );
-          } else {
-            this.showInfoNotification(
-              syncSettings.notificationLevel,
-              `Env Sync 已检查 ${formatProjectLabel(context)}：无需变更。`,
-              false
-            );
+          } catch (error) {
+            this.handleError(error, `打开工作区同步（${context.workspaceName}）`);
           }
         }
         completedSuccessfully = true;
@@ -360,14 +364,11 @@ class WorkspaceSession implements vscode.Disposable {
         let completedSuccessfully = false;
         try {
           const contextsByPath = new Map(contexts.map((context) => [context.workspacePath, context]));
-          const pendingPaths = [...this.pendingProjectPaths];
-          this.pendingProjectPaths.clear();
-
-          for (const projectPath of pendingPaths) {
+          completedSuccessfully = await processPendingProjects(this.pendingProjectPaths, async (projectPath) => {
             const cachedContext = contextsByPath.get(projectPath);
             const context = cachedContext ? await this.refreshContextBranch(cachedContext) : undefined;
             if (!context) {
-              continue;
+              return;
             }
 
             this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 推送 env 变更。`);
@@ -398,8 +399,9 @@ class WorkspaceSession implements vscode.Disposable {
                 false
               );
             }
-          }
-          completedSuccessfully = true;
+          }, (projectPath, error) => {
+            this.handleError(error, `推送同步（${projectPath}）`);
+          });
         } catch (error) {
           this.handleError(error, "推送同步");
         } finally {

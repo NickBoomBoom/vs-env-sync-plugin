@@ -100,7 +100,9 @@ export class EnvSyncEngine {
       return {
         uploadedPaths: result.uploadedPaths,
         pulledPaths: result.pulledPaths,
-        skippedPaths: result.skippedPaths
+        skippedPaths: result.skippedPaths,
+        ...(result.deletedPaths.length > 0 ? { deletedPaths: result.deletedPaths } : {}),
+        ...(result.deletedLocalPaths.length > 0 ? { deletedLocalPaths: result.deletedLocalPaths } : {})
       };
     });
   }
@@ -136,6 +138,8 @@ export class EnvSyncEngine {
     const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots, context.ignoredDirectoryNames);
     const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes, context.ignoredProjectRoots, context.ignoredDirectoryNames);
     const baseline = this.stateStore ? await this.stateStore.read(settings, context) : new Map<string, string>();
+    const contextChanged = this.stateStore ? await this.stateStore.hasContextChanged(settings, context) : false;
+    const decisionTrigger = contextChanged ? "open" : trigger;
     const nextBaseline = new Map(baseline);
     const allPaths = new Set<string>([...localFiles.keys(), ...remoteFiles.keys(), ...baseline.keys()]);
     const result: InternalSyncResult = {
@@ -153,13 +157,13 @@ export class EnvSyncEngine {
       const remoteContent = remoteFiles.get(relativePath);
       const localHash = contentHash(localContent);
       const remoteHash = contentHash(remoteContent);
-      const hasBaseline = baseline.has(relativePath);
+      const hasBaseline = !contextChanged && baseline.has(relativePath);
       const decision = decideThreeWay(
         baseline.get(relativePath),
         localHash,
         remoteHash,
         hasBaseline,
-        trigger
+        decisionTrigger
       );
       const localTargetPath = path.join(context.workspacePath, relativePath);
       const remoteTargetPath = path.join(remoteRoot, relativePath);
@@ -210,7 +214,7 @@ export class EnvSyncEngine {
       const localOnly = !hasBaseline && localContent !== undefined && remoteContent === undefined;
       const choice = localOnly
         ? await this.prompts.chooseLocalOnly(context, relativePath)
-        : await this.prompts.chooseConflict(context, relativePath);
+        : await this.prompts.chooseConflict(context, relativePath, localContent !== undefined, remoteContent !== undefined);
       if (choice === "skip") {
         result.skippedPaths.push(relativePath);
         continue;
