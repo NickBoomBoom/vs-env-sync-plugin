@@ -8,6 +8,7 @@ import { ConfigRepoManager } from "../src/core/configRepoManager";
 import { EnvSyncEngine } from "../src/core/envSyncEngine";
 import { GitCli } from "../src/core/git";
 import { compilePathRegexes } from "../src/core/pathRegex";
+import { SyncStateStore } from "../src/core/syncStateStore";
 import { Logger, SyncPrompts, WorkspaceSyncContext } from "../src/core/types";
 
 function hashedBranchFile(branch: string, ...relativePaths: string[]): string {
@@ -27,7 +28,7 @@ class TestPrompts implements SyncPrompts {
   }
 
   async chooseConflict(): Promise<"pull" | "upload" | "skip"> {
-    return "pull";
+    return "upload";
   }
 }
 
@@ -94,7 +95,7 @@ describe("git integration", () => {
     await fs.mkdir(workspacePath, { recursive: true });
 
     const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
-    const engine = new EnvSyncEngine(manager, new TestPrompts(), new TestLogger());
+    const engine = new EnvSyncEngine(manager, new TestPrompts(), new TestLogger(), new SyncStateStore(path.join(root, "state")));
     const settings = {
       repoUrl: bareConfigRepo,
       branch: "main"
@@ -117,6 +118,9 @@ describe("git integration", () => {
     assert.deepEqual(pushResult, {
       pushedPaths: [".env.local"],
       deletedPaths: [],
+      pulledPaths: [],
+      deletedLocalPaths: [],
+      skippedPaths: [],
       committed: true
     });
 
@@ -196,6 +200,9 @@ describe("git integration", () => {
     assert.deepEqual(pushResult, {
       pushedPaths: [".env"],
       deletedPaths: [],
+      pulledPaths: [],
+      deletedLocalPaths: [],
+      skippedPaths: [],
       committed: true
     });
     assert.equal(

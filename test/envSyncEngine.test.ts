@@ -7,6 +7,7 @@ import path from "node:path";
 import { ConfigRepoManager } from "../src/core/configRepoManager";
 import { EnvSyncEngine } from "../src/core/envSyncEngine";
 import { compilePathRegexes } from "../src/core/pathRegex";
+import { SyncStateStore } from "../src/core/syncStateStore";
 import { Logger, SyncPrompts, WorkspaceSyncContext } from "../src/core/types";
 
 class InMemoryLogger implements Logger {
@@ -78,7 +79,7 @@ async function initializeBranchStore(branchRoot: string): Promise<void> {
   await fs.writeFile(path.join(branchRoot, "env-sync-branch.json"), "{\"version\":1}\n");
 }
 
-function createConfigRepoManager(remoteGitRoot: string, onCommit: () => void = () => {}): ConfigRepoManager {
+function createConfigRepoManager(remoteGitRoot: string, onCommit: () => void | boolean = () => {}): ConfigRepoManager {
   return {
     async verifyRemote(): Promise<void> {},
     async ensureReady() {
@@ -89,8 +90,8 @@ function createConfigRepoManager(remoteGitRoot: string, onCommit: () => void = (
     },
     async refresh(): Promise<void> {},
     async commitProjectChanges(): Promise<boolean> {
-      onCommit();
-      return true;
+      const committed = onCommit();
+      return committed !== false;
     }
   } as unknown as ConfigRepoManager;
 }
@@ -211,19 +212,23 @@ describe("EnvSyncEngine", () => {
       }
     } as unknown as ConfigRepoManager;
 
-    const engine = new EnvSyncEngine(configRepoManager, new StaticPrompts(), new InMemoryLogger());
-    const result = await engine.syncLocalChanges(
-      {
-        repoUrl: "git@github.com:team/env-config.git",
-        branch: "main"
-      },
-      createContext(workspacePath)
-    );
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const context = createContext(workspacePath);
+    const stateStore = new SyncStateStore(path.join(root, "state"));
+    await stateStore.write(settings, context, new Map([
+      [".env", createHash("sha256").update("REMOTE=1\n").digest("hex")],
+      [".env.old", createHash("sha256").update("OLD=1\n").digest("hex")]
+    ]));
+    const engine = new EnvSyncEngine(configRepoManager, new StaticPrompts(), new InMemoryLogger(), stateStore);
+    const result = await engine.syncLocalChanges(settings, context);
 
     assert.equal(committed, true);
     assert.deepEqual(result, {
       pushedPaths: [".env"],
       deletedPaths: [".env.old"],
+      pulledPaths: [],
+      deletedLocalPaths: [],
+      skippedPaths: [],
       committed: true
     });
     assert.equal(await fs.readFile(path.join(remoteStorePath, ".env"), "utf8"), "LOCAL=2\n");
@@ -273,6 +278,9 @@ describe("EnvSyncEngine", () => {
     assert.deepEqual(result, {
       pushedPaths: ["config/.env.dev"],
       deletedPaths: [],
+      pulledPaths: [],
+      deletedLocalPaths: [],
+      skippedPaths: [],
       committed: true
     });
     assert.equal(await fs.readFile(path.join(remoteStorePath, "config", ".env.dev"), "utf8"), "CONFIG=1\n");
@@ -342,7 +350,7 @@ describe("EnvSyncEngine", () => {
     await fs.writeFile(path.join(legacyRoot, ".env"), "SHARED=1\n");
 
     const engine = new EnvSyncEngine(
-      createConfigRepoManager(remoteGitRoot, () => { commitCount += 1; }),
+      createConfigRepoManager(remoteGitRoot, () => false),
       new StaticPrompts(),
       new InMemoryLogger()
     );
@@ -373,7 +381,7 @@ describe("EnvSyncEngine", () => {
     await fs.writeFile(path.join(mainRoot, ".env"), "MAIN=1\n");
     await fs.writeFile(path.join(otherRoot, ".env"), "OTHER=1\n");
 
-    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), new StaticPrompts(), new InMemoryLogger());
+    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), new StaticPrompts("upload", "upload"), new InMemoryLogger());
     await engine.syncLocalChanges(
       { repoUrl: "git@github.com:team/env-config.git", branch: "main" },
       createContext(workspacePath)
@@ -445,6 +453,137 @@ describe("EnvSyncEngine", () => {
 
     await assert.rejects(fs.access(path.join(branchRoot, ".env.two")));
     assert.equal(await fs.readFile(path.join(legacyBranchRoot, ".env.two"), "utf8"), "TWO=1\n");
+  });
+
+  it("pulls another device's additions while pushing a different local change", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-multi-device-"));
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const workspaceA = path.join(root, "workspace-a");
+    const workspaceB = path.join(root, "workspace-b");
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const contextA = createContext(workspaceA);
+    const contextB = createContext(workspaceB);
+    const stateB = new SyncStateStore(path.join(root, "state-b"));
+
+    await initializeBranchStore(remoteStorePath);
+    await fs.mkdir(workspaceA, { recursive: true });
+    await fs.mkdir(workspaceB, { recursive: true });
+    await fs.writeFile(path.join(remoteStorePath, ".env.shared"), "SHARED=1\n");
+    await fs.writeFile(path.join(workspaceA, ".env.shared"), "SHARED=1\n");
+    await fs.writeFile(path.join(workspaceA, ".env.new"), "NEW=1\n");
+    await fs.writeFile(path.join(workspaceB, ".env.shared"), "SHARED=1\n");
+    await stateB.write(settings, contextB, new Map([
+      [".env.shared", createHash("sha256").update("SHARED=1\n").digest("hex")]
+    ]));
+
+    const engineA = new EnvSyncEngine(
+      createConfigRepoManager(remoteGitRoot),
+      new StaticPrompts(),
+      new InMemoryLogger(),
+      new SyncStateStore(path.join(root, "state-a"))
+    );
+    await engineA.syncLocalChanges(settings, contextA);
+    await fs.writeFile(path.join(workspaceB, ".env.shared"), "SHARED=2\n");
+    const engineB = new EnvSyncEngine(
+      createConfigRepoManager(remoteGitRoot),
+      new StaticPrompts("upload", "upload"),
+      new InMemoryLogger(),
+      stateB
+    );
+    const result = await engineB.syncLocalChanges(settings, contextB);
+
+    assert.deepEqual(result.pulledPaths, [".env.new"]);
+    assert.deepEqual(result.pushedPaths, [".env.shared"]);
+    assert.equal(await fs.readFile(path.join(workspaceB, ".env.new"), "utf8"), "NEW=1\n");
+    assert.equal(await fs.readFile(path.join(remoteStorePath, ".env.new"), "utf8"), "NEW=1\n");
+  });
+
+  it("deletes remotely only when a baseline proves the file was locally deleted", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-tracked-delete-"));
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const workspacePath = path.join(root, "workspace");
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const context = createContext(workspacePath);
+    const stateStore = new SyncStateStore(path.join(root, "state"));
+
+    await initializeBranchStore(remoteStorePath);
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(remoteStorePath, ".env.delete"), "DELETE=1\n");
+    await stateStore.write(settings, context, new Map([
+      [".env.delete", createHash("sha256").update("DELETE=1\n").digest("hex")]
+    ]));
+    const engine = new EnvSyncEngine(
+      createConfigRepoManager(remoteGitRoot),
+      new StaticPrompts(),
+      new InMemoryLogger(),
+      stateStore
+    );
+
+    const result = await engine.syncLocalChanges(settings, context);
+
+    assert.deepEqual(result.deletedPaths, [".env.delete"]);
+    await assert.rejects(fs.access(path.join(remoteStorePath, ".env.delete")));
+  });
+
+  it("keeps a skipped conflict during later background syncs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-skip-conflict-"));
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const workspacePath = path.join(root, "workspace");
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const context = createContext(workspacePath);
+    const stateStore = new SyncStateStore(path.join(root, "state"));
+
+    await initializeBranchStore(remoteStorePath);
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(remoteStorePath, ".env"), "REMOTE=1\n");
+    await fs.writeFile(path.join(workspacePath, ".env"), "LOCAL=1\n");
+    await stateStore.write(settings, context, new Map([
+      [".env", createHash("sha256").update("BASE=1\n").digest("hex")]
+    ]));
+    const prompts = new StaticPrompts("skip", "skip");
+    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), prompts, new InMemoryLogger(), stateStore);
+
+    await engine.syncOnWorkspaceOpen(settings, context);
+    await fs.writeFile(path.join(workspacePath, ".env.other"), "OTHER=1\n");
+    const result = await engine.syncLocalChanges(settings, context);
+
+    assert.deepEqual(result.skippedPaths, [".env"]);
+    assert.equal(await fs.readFile(path.join(remoteStorePath, ".env"), "utf8"), "REMOTE=1\n");
+    assert.equal(await fs.readFile(path.join(remoteStorePath, ".env.other"), "utf8"), "OTHER=1\n");
+  });
+
+  it("advances the baseline only after the config commit succeeds", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-state-retry-"));
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const workspacePath = path.join(root, "workspace");
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const context = createContext(workspacePath);
+    const stateStore = new SyncStateStore(path.join(root, "state"));
+    const oldHash = createHash("sha256").update("OLD=1\n").digest("hex");
+    const newHash = createHash("sha256").update("NEW=1\n").digest("hex");
+
+    await initializeBranchStore(remoteStorePath);
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(remoteStorePath, ".env"), "OLD=1\n");
+    await fs.writeFile(path.join(workspacePath, ".env"), "NEW=1\n");
+    await stateStore.write(settings, context, new Map([[".env", oldHash]]));
+    let attempts = 0;
+    const manager = createConfigRepoManager(remoteGitRoot, () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("push failed");
+      }
+    });
+    const engine = new EnvSyncEngine(manager, new StaticPrompts("upload", "upload"), new InMemoryLogger(), stateStore);
+
+    await assert.rejects(engine.syncLocalChanges(settings, context), /push failed/);
+    assert.deepEqual(await stateStore.read(settings, context), new Map([[".env", oldHash]]));
+    await engine.syncLocalChanges(settings, context);
+    assert.deepEqual(await stateStore.read(settings, context), new Map([[".env", newHash]]));
   });
 
   it("pushes env changes when a project contains many non-matching files", async function () {

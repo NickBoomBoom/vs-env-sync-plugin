@@ -66,5 +66,8 @@ export interface OpenSyncResult {
 export interface PushSyncResult {
   pushedPaths: string[];
   deletedPaths: string[];
+  pulledPaths: string[];
+  deletedLocalPaths: string[];
+  skippedPaths: string[];
   committed: boolean;
 }

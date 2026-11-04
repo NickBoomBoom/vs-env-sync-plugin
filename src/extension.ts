@@ -14,6 +14,7 @@ import {
   toWorkspaceRelativePath
 } from "./core/pathRegex";
 import { SerialQueue } from "./core/serialQueue";
+import { SyncStateStore } from "./core/syncStateStore";
 import {
   ConfigRepoSettings,
   DEFAULT_CONFIG_REPO_BRANCH,
@@ -103,13 +104,24 @@ function summarizePaths(paths: readonly string[], limit = 3): string {
   return remaining > 0 ? `${summary}，另有 ${remaining} 个` : summary;
 }
 
-function buildSyncSummary(result: { pushedPaths: string[]; deletedPaths: string[] }): string {
+function buildSyncSummary(result: {
+  pushedPaths: string[];
+  deletedPaths: string[];
+  pulledPaths: string[];
+  deletedLocalPaths: string[];
+}): string {
   const parts: string[] = [];
   if (result.pushedPaths.length > 0) {
     parts.push(`已更新 ${summarizePaths(result.pushedPaths)}`);
   }
   if (result.deletedPaths.length > 0) {
-    parts.push(`已删除 ${summarizePaths(result.deletedPaths)}`);
+    parts.push(`已删除远端 ${summarizePaths(result.deletedPaths)}`);
+  }
+  if (result.pulledPaths.length > 0) {
+    parts.push(`已拉取 ${summarizePaths(result.pulledPaths)}`);
+  }
+  if (result.deletedLocalPaths.length > 0) {
+    parts.push(`已删除本地 ${summarizePaths(result.deletedLocalPaths)}`);
   }
   return parts.join("；");
 }
@@ -316,10 +328,19 @@ class WorkspaceSession implements vscode.Disposable {
             this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 推送 env 变更。`);
             this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行推送同步。`);
             const result = await this.engine.syncLocalChanges(settings, context);
+            this.suppressWatcherEvents(context.workspacePath, [...result.pulledPaths, ...result.deletedLocalPaths]);
+            const hasChanges = result.committed || [
+              ...result.pushedPaths,
+              ...result.deletedPaths,
+              ...result.pulledPaths,
+              ...result.deletedLocalPaths
+            ].length > 0;
             if (result.committed) {
               this.logger.info(
                 `推送同步已为 ${context.workspaceName} 提交 ${result.pushedPaths.length} 个更新文件和 ${result.deletedPaths.length} 个删除文件。`
               );
+            }
+            if (hasChanges) {
               const summary = buildSyncSummary(result);
               this.showInfoNotification(
                 syncSettings.notificationLevel,
@@ -646,7 +667,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const git = new GitCli();
   const queue = new SerialQueue();
   const configRepoManager = new ConfigRepoManager(context.globalStorageUri.fsPath, git, logger);
-  const engine = new EnvSyncEngine(configRepoManager, new VscodePrompts(), logger);
+  const stateStore = new SyncStateStore(context.globalStorageUri.fsPath);
+  const engine = new EnvSyncEngine(configRepoManager, new VscodePrompts(), logger, stateStore);
   const coordinator = new WorkspaceCoordinator(queue, engine, git, logger, statusBar);
   const showOutputCommand = vscode.commands.registerCommand("envSync.showOutput", () => {
     outputChannel.show(true);

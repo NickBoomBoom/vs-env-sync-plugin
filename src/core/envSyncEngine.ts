@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { ConfigRepoManager, ReadyConfigRepo } from "./configRepoManager";
 import { pathExists, readMatchingFiles, removeFileIfExists, writeFileEnsuringDir, pruneEmptyDirectories } from "./fileStore";
 import { assertPathInside, branchMetadataPath, branchStorePath } from "./storagePaths";
+import { SyncStateStore } from "./syncStateStore";
+import { decideThreeWay, ThreeWayTrigger } from "./threeWaySync";
 import {
   ConfigRepoSettings,
   Logger,
@@ -12,8 +15,8 @@ import {
   WorkspaceSyncContext
 } from "./types";
 
-function bufferEquals(left: Buffer, right: Buffer): boolean {
-  return left.equals(right);
+interface InternalSyncResult extends PushSyncResult {
+  uploadedPaths: string[];
 }
 
 function legacyProjectStorePath(repoPath: string, context: WorkspaceSyncContext): string {
@@ -60,11 +63,24 @@ function commitMessage(context: WorkspaceSyncContext): string {
   return `chore: sync env for ${context.project.slug}`;
 }
 
+function contentHash(content: Buffer | undefined): string | undefined {
+  return content ? createHash("sha256").update(content).digest("hex") : undefined;
+}
+
+function updateBaseline(baseline: Map<string, string>, relativePath: string, hash: string | undefined): void {
+  if (hash) {
+    baseline.set(relativePath, hash);
+  } else {
+    baseline.delete(relativePath);
+  }
+}
+
 export class EnvSyncEngine {
   constructor(
     private readonly configRepoManager: ConfigRepoManager,
     private readonly prompts: SyncPrompts,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly stateStore?: SyncStateStore
   ) {}
 
   async verifyConfigRepo(settings: ConfigRepoSettings): Promise<void> {
@@ -74,125 +90,144 @@ export class EnvSyncEngine {
   async syncOnWorkspaceOpen(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<OpenSyncResult> {
     const repo = await this.configRepoManager.ensureReady(settings);
     await this.configRepoManager.refresh(repo);
-    return this.runOpenSync(repo, context);
+    const result = await this.runSync(repo, settings, context, "open");
+    return {
+      uploadedPaths: result.uploadedPaths,
+      pulledPaths: result.pulledPaths,
+      skippedPaths: result.skippedPaths
+    };
   }
 
   async syncLocalChanges(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<PushSyncResult> {
     const repo = await this.configRepoManager.ensureReady(settings);
     await this.configRepoManager.refresh(repo);
-    return this.runPushSync(repo, context);
+    const result = await this.runSync(repo, settings, context, "change");
+    return {
+      pushedPaths: result.pushedPaths,
+      deletedPaths: result.deletedPaths,
+      pulledPaths: result.pulledPaths,
+      deletedLocalPaths: result.deletedLocalPaths,
+      skippedPaths: result.skippedPaths,
+      committed: result.committed
+    };
   }
 
-  private async runOpenSync(repo: ReadyConfigRepo, context: WorkspaceSyncContext): Promise<OpenSyncResult> {
+  private async runSync(
+    repo: ReadyConfigRepo,
+    settings: ConfigRepoSettings,
+    context: WorkspaceSyncContext,
+    trigger: ThreeWayTrigger
+  ): Promise<InternalSyncResult> {
     const { remoteRoot, inherited } = await prepareBranchStore(repo, context);
     const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots);
     const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes, context.ignoredProjectRoots);
-    const allPaths = new Set<string>([...localFiles.keys(), ...remoteFiles.keys()]);
-
-    const result: OpenSyncResult = {
+    const baseline = this.stateStore ? await this.stateStore.read(settings, context) : new Map<string, string>();
+    const nextBaseline = new Map(baseline);
+    const allPaths = new Set<string>([...localFiles.keys(), ...remoteFiles.keys(), ...baseline.keys()]);
+    const result: InternalSyncResult = {
       uploadedPaths: [],
       pulledPaths: [],
-      skippedPaths: []
+      skippedPaths: [],
+      pushedPaths: [],
+      deletedPaths: [],
+      deletedLocalPaths: [],
+      committed: false
     };
 
     for (const relativePath of [...allPaths].sort()) {
       const localContent = localFiles.get(relativePath);
       const remoteContent = remoteFiles.get(relativePath);
+      const localHash = contentHash(localContent);
+      const remoteHash = contentHash(remoteContent);
+      const hasBaseline = baseline.has(relativePath);
+      const decision = decideThreeWay(
+        baseline.get(relativePath),
+        localHash,
+        remoteHash,
+        hasBaseline,
+        trigger
+      );
       const localTargetPath = path.join(context.workspacePath, relativePath);
       const remoteTargetPath = path.join(remoteRoot, relativePath);
+      assertPathInside(context.workspacePath, localTargetPath);
+      assertPathInside(remoteRoot, remoteTargetPath);
 
-      if (!localContent && remoteContent) {
-        await writeFileEnsuringDir(localTargetPath, remoteContent);
-        result.pulledPaths.push(relativePath);
+      if (decision === "none") {
+        updateBaseline(nextBaseline, relativePath, localHash);
         continue;
       }
 
-      if (localContent && !remoteContent) {
-        const decision = await this.prompts.chooseLocalOnly(context, relativePath);
-        if (decision === "upload") {
-          await writeFileEnsuringDir(remoteTargetPath, localContent);
+      if (decision === "pull" && remoteContent) {
+        await writeFileEnsuringDir(localTargetPath, remoteContent);
+        result.pulledPaths.push(relativePath);
+        updateBaseline(nextBaseline, relativePath, remoteHash);
+        continue;
+      }
+
+      if (decision === "delete-local") {
+        await removeFileIfExists(localTargetPath);
+        await pruneEmptyDirectories(context.workspacePath, localTargetPath);
+        result.deletedLocalPaths.push(relativePath);
+        updateBaseline(nextBaseline, relativePath, undefined);
+        continue;
+      }
+
+      if (decision === "push" && localContent) {
+        await writeFileEnsuringDir(remoteTargetPath, localContent);
+        if (trigger === "open") {
           result.uploadedPaths.push(relativePath);
         } else {
-          result.skippedPaths.push(relativePath);
+          result.pushedPaths.push(relativePath);
         }
+        updateBaseline(nextBaseline, relativePath, localHash);
         continue;
       }
 
-      if (!localContent || !remoteContent) {
+      if (decision === "delete-remote") {
+        await removeFileIfExists(remoteTargetPath);
+        await pruneEmptyDirectories(remoteRoot, remoteTargetPath);
+        result.deletedPaths.push(relativePath);
+        updateBaseline(nextBaseline, relativePath, undefined);
         continue;
       }
 
-      if (bufferEquals(localContent, remoteContent)) {
+      const localOnly = !hasBaseline && localContent !== undefined && remoteContent === undefined;
+      const choice = localOnly
+        ? await this.prompts.chooseLocalOnly(context, relativePath)
+        : await this.prompts.chooseConflict(context, relativePath);
+      if (choice === "skip") {
+        result.skippedPaths.push(relativePath);
         continue;
       }
 
-      const decision = await this.prompts.chooseConflict(context, relativePath);
-      if (decision === "pull") {
+      if (choice === "pull" && remoteContent) {
         await writeFileEnsuringDir(localTargetPath, remoteContent);
         result.pulledPaths.push(relativePath);
+        updateBaseline(nextBaseline, relativePath, remoteHash);
         continue;
       }
 
-      if (decision === "upload") {
+      if (choice === "upload" && localContent) {
         await writeFileEnsuringDir(remoteTargetPath, localContent);
-        result.uploadedPaths.push(relativePath);
-        continue;
-      }
-
-      result.skippedPaths.push(relativePath);
-    }
-
-    if (inherited || result.uploadedPaths.length > 0) {
-      const committed = await this.configRepoManager.commitProjectChanges(repo, remoteRoot, commitMessage(context));
-      if (inherited) {
-        this.logger.info(`已为 ${context.project.slug} 的分支 ${context.branch} 继承旧共享 env 数据；已提交：${committed ? "是" : "否"}。`);
-      }
-      if (result.uploadedPaths.length > 0) {
-        this.logger.info(`打开工作区同步已上传 ${result.uploadedPaths.length} 个文件；已提交：${committed ? "是" : "否"}。`);
+        if (trigger === "open") {
+          result.uploadedPaths.push(relativePath);
+        } else {
+          result.pushedPaths.push(relativePath);
+        }
+        updateBaseline(nextBaseline, relativePath, localHash);
       }
     }
 
-    return result;
-  }
-
-  private async runPushSync(repo: ReadyConfigRepo, context: WorkspaceSyncContext): Promise<PushSyncResult> {
-    const { remoteRoot, inherited } = await prepareBranchStore(repo, context);
-    const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots);
-    const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes);
-    const pushedPaths: string[] = [];
-    const deletedPaths: string[] = [];
-
-    for (const [relativePath, content] of localFiles) {
-      const remoteTargetPath = path.join(remoteRoot, relativePath);
-      const previousContent = remoteFiles.get(relativePath);
-      if (!previousContent || !bufferEquals(previousContent, content)) {
-        await writeFileEnsuringDir(remoteTargetPath, content);
-        pushedPaths.push(relativePath);
-      }
-    }
-
-    for (const relativePath of remoteFiles.keys()) {
-      if (localFiles.has(relativePath)) {
-        continue;
-      }
-
-      const remoteTargetPath = path.join(remoteRoot, relativePath);
-      await removeFileIfExists(remoteTargetPath);
-      await pruneEmptyDirectories(remoteRoot, remoteTargetPath);
-      deletedPaths.push(relativePath);
-    }
-
-    const committed = inherited || pushedPaths.length > 0 || deletedPaths.length > 0
-      ? await this.configRepoManager.commitProjectChanges(repo, remoteRoot, commitMessage(context))
-      : false;
+    result.committed = await this.configRepoManager.commitProjectChanges(repo, remoteRoot, commitMessage(context));
     if (inherited) {
-      this.logger.info(`已为 ${context.project.slug} 的分支 ${context.branch} 继承旧共享 env 数据；已提交：${committed ? "是" : "否"}。`);
+      this.logger.info(`已初始化 ${context.project.slug} 的分支 ${context.branch} 存储；已提交：${result.committed ? "是" : "否"}。`);
     }
-
-    return {
-      pushedPaths,
-      deletedPaths,
-      committed
-    };
+    if (trigger === "open" && result.uploadedPaths.length > 0) {
+      this.logger.info(`打开工作区同步已上传 ${result.uploadedPaths.length} 个文件；已提交：${result.committed ? "是" : "否"}。`);
+    }
+    if (this.stateStore) {
+      await this.stateStore.write(settings, context, nextBaseline);
+    }
+    return result;
   }
 }
