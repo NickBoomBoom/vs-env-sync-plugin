@@ -88,28 +88,32 @@ export class EnvSyncEngine {
   }
 
   async syncOnWorkspaceOpen(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<OpenSyncResult> {
-    const repo = await this.configRepoManager.ensureReady(settings);
-    await this.configRepoManager.refresh(repo);
-    const result = await this.runSync(repo, settings, context, "open");
-    return {
-      uploadedPaths: result.uploadedPaths,
-      pulledPaths: result.pulledPaths,
-      skippedPaths: result.skippedPaths
-    };
+    return this.configRepoManager.runExclusive(settings, async () => {
+      const repo = await this.configRepoManager.ensureReady(settings);
+      await this.configRepoManager.refresh(repo);
+      const result = await this.runSync(repo, settings, context, "open");
+      return {
+        uploadedPaths: result.uploadedPaths,
+        pulledPaths: result.pulledPaths,
+        skippedPaths: result.skippedPaths
+      };
+    });
   }
 
   async syncLocalChanges(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<PushSyncResult> {
-    const repo = await this.configRepoManager.ensureReady(settings);
-    await this.configRepoManager.refresh(repo);
-    const result = await this.runSync(repo, settings, context, "change");
-    return {
-      pushedPaths: result.pushedPaths,
-      deletedPaths: result.deletedPaths,
-      pulledPaths: result.pulledPaths,
-      deletedLocalPaths: result.deletedLocalPaths,
-      skippedPaths: result.skippedPaths,
-      committed: result.committed
-    };
+    return this.configRepoManager.runExclusive(settings, async () => {
+      const repo = await this.configRepoManager.ensureReady(settings);
+      await this.configRepoManager.refresh(repo);
+      const result = await this.runSync(repo, settings, context, "change");
+      return {
+        pushedPaths: result.pushedPaths,
+        deletedPaths: result.deletedPaths,
+        pulledPaths: result.pulledPaths,
+        deletedLocalPaths: result.deletedLocalPaths,
+        skippedPaths: result.skippedPaths,
+        committed: result.committed
+      };
+    });
   }
 
   private async runSync(

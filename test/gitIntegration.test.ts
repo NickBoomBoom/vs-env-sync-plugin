@@ -334,6 +334,43 @@ describe("git integration", () => {
     assert.equal(await fs.readFile(path.join(verifyClone, "first.txt"), "utf8"), "FIRST=1\n");
   });
 
+  it("serializes concurrent managers sharing one config clone", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-managers-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, "README.md", "BASE=1\n");
+    const workspaceA = path.join(root, "workspace-a");
+    const workspaceB = path.join(root, "workspace-b");
+    await fs.mkdir(workspaceA, { recursive: true });
+    await fs.mkdir(workspaceB, { recursive: true });
+    await fs.writeFile(path.join(workspaceA, ".env.a"), "A=1\n");
+    await fs.writeFile(path.join(workspaceB, ".env.b"), "B=1\n");
+    const storage = path.join(root, "storage");
+    const settings = { repoUrl: bareConfigRepo, branch: "main" };
+    const engineA = new EnvSyncEngine(
+      new ConfigRepoManager(storage, new GitCli(), new TestLogger()),
+      new TestPrompts(),
+      new TestLogger(),
+      new SyncStateStore(path.join(root, "state-a"))
+    );
+    const engineB = new EnvSyncEngine(
+      new ConfigRepoManager(storage, new GitCli(), new TestLogger()),
+      new TestPrompts(),
+      new TestLogger(),
+      new SyncStateStore(path.join(root, "state-b"))
+    );
+
+    await Promise.all([
+      engineA.syncLocalChanges(settings, createContext(workspaceA)),
+      engineB.syncLocalChanges(settings, createContext(workspaceB))
+    ]);
+
+    const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
+    assert.equal(await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env.a")), "utf8"), "A=1\n");
+    assert.equal(await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env.b")), "utf8"), "B=1\n");
+  });
+
   it("rebases onto the configured branch when a concurrent fetch writes multiple branches", async () => {
     class ConcurrentFetchGitCli extends GitCli {
       async run(args: string[], options: { cwd?: string } = {}): Promise<string> {

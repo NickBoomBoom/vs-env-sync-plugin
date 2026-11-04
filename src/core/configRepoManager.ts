@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { FileLock } from "./fileLock";
 import { GitCli, GitCommandError } from "./git";
 import { ConfigRepoSettings, Logger } from "./types";
 import { hashRemoteUrl } from "./git";
@@ -11,11 +12,19 @@ export interface ReadyConfigRepo {
 }
 
 export class ConfigRepoManager {
+  private readonly fileLock: FileLock;
+
   constructor(
     private readonly baseStoragePath: string,
     private readonly git: GitCli,
     private readonly logger: Logger
-  ) {}
+  ) {
+    this.fileLock = new FileLock(baseStoragePath);
+  }
+
+  async runExclusive<T>(settings: ConfigRepoSettings, task: () => Promise<T>): Promise<T> {
+    return this.fileLock.runExclusive(hashRemoteUrl(settings.repoUrl), task);
+  }
 
   async verifyRemote(settings: ConfigRepoSettings): Promise<void> {
     await this.git.verifyRemoteAccessible(settings.repoUrl);

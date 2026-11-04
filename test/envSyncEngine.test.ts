@@ -88,6 +88,9 @@ function createConfigRepoManager(remoteGitRoot: string, onCommit: () => void | b
         branch: "main"
       };
     },
+    async runExclusive(_settings: unknown, task: () => Promise<unknown>) {
+      return task();
+    },
     async refresh(): Promise<void> {},
     async commitProjectChanges(): Promise<boolean> {
       const committed = onCommit();
@@ -117,7 +120,10 @@ describe("EnvSyncEngine", () => {
           branch: "main"
         };
       },
-      async refresh(): Promise<void> {},
+      async runExclusive(_settings: unknown, task: () => Promise<unknown>) {
+      return task();
+    },
+    async refresh(): Promise<void> {},
       async commitProjectChanges(): Promise<boolean> {
         return false;
       }
@@ -159,7 +165,10 @@ describe("EnvSyncEngine", () => {
           branch: "main"
         };
       },
-      async refresh(): Promise<void> {},
+      async runExclusive(_settings: unknown, task: () => Promise<unknown>) {
+      return task();
+    },
+    async refresh(): Promise<void> {},
       async commitProjectChanges(): Promise<boolean> {
         committed = true;
         return true;
@@ -205,7 +214,10 @@ describe("EnvSyncEngine", () => {
           branch: "main"
         };
       },
-      async refresh(): Promise<void> {},
+      async runExclusive(_settings: unknown, task: () => Promise<unknown>) {
+      return task();
+    },
+    async refresh(): Promise<void> {},
       async commitProjectChanges(): Promise<boolean> {
         committed = true;
         return true;
@@ -254,7 +266,10 @@ describe("EnvSyncEngine", () => {
           branch: "main"
         };
       },
-      async refresh(): Promise<void> {},
+      async runExclusive(_settings: unknown, task: () => Promise<unknown>) {
+      return task();
+    },
+    async refresh(): Promise<void> {},
       async commitProjectChanges(): Promise<boolean> {
         committed = true;
         return true;
