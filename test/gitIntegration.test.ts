@@ -201,4 +201,40 @@ describe("git integration", () => {
       "LOCAL=2\n"
     );
   });
+
+  it("rebases onto the configured branch when a concurrent fetch writes multiple branches", async () => {
+    class ConcurrentFetchGitCli extends GitCli {
+      async run(args: string[], options: { cwd?: string } = {}): Promise<string> {
+        if (args[0] === "pull") {
+          return super.run([...args, "other"], options);
+        }
+        return super.run(args, options);
+      }
+    }
+
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-fetch-race-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, "main.txt", "MAIN=1\n");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const readyConfigRepo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "main" });
+
+    await git(gitCli, seedClone, "checkout", "-b", "other");
+    await fs.writeFile(path.join(seedClone, "other.txt"), "OTHER=1\n");
+    await git(gitCli, seedClone, "add", "-A");
+    await git(gitCli, seedClone, "commit", "-m", "other branch");
+    await git(gitCli, seedClone, "push", "-u", "origin", "other");
+    await git(gitCli, seedClone, "checkout", "main");
+    await fs.writeFile(path.join(seedClone, "main.txt"), "MAIN=2\n");
+    await git(gitCli, seedClone, "add", "-A");
+    await git(gitCli, seedClone, "commit", "-m", "main update");
+    await git(gitCli, seedClone, "push");
+
+    const racingManager = new ConfigRepoManager(path.join(root, "storage"), new ConcurrentFetchGitCli(), new TestLogger());
+    await racingManager.refresh(readyConfigRepo);
+
+    assert.equal(await fs.readFile(path.join(readyConfigRepo.repoPath, "main.txt"), "utf8"), "MAIN=2\n");
+    await assert.rejects(fs.access(path.join(readyConfigRepo.repoPath, "other.txt")));
+  });
 });

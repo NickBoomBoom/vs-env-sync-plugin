@@ -34,7 +34,7 @@ export class ConfigRepoManager {
     await this.git.run(["fetch", "--prune", "origin"], { cwd: repo.repoPath });
 
     if (await this.hasRemoteBranch(repo.repoPath, repo.branch)) {
-      await this.git.run(["pull", "--rebase", "--autostash", "origin", repo.branch], { cwd: repo.repoPath });
+      await this.git.run(["rebase", "--autostash", `origin/${repo.branch}`], { cwd: repo.repoPath });
       return;
     }
 
