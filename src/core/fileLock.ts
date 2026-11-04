@@ -5,6 +5,7 @@ import path from "node:path";
 interface FileLockOptions {
   retryDelayMs?: number;
   heartbeatIntervalMs?: number;
+  initializationTimeoutMs?: number;
 }
 
 interface LockOwner {
@@ -28,10 +29,12 @@ function processIsAlive(pid: number): boolean {
 export class FileLock {
   private readonly retryDelayMs: number;
   private readonly heartbeatIntervalMs: number;
+  private readonly initializationTimeoutMs: number;
 
   constructor(private readonly baseStoragePath: string, options: FileLockOptions = {}) {
     this.retryDelayMs = options.retryDelayMs ?? 50;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30_000;
+    this.initializationTimeoutMs = options.initializationTimeoutMs ?? 1_000;
   }
 
   async runExclusive<T>(repoKey: string, task: () => Promise<T>): Promise<T> {
@@ -56,48 +59,82 @@ export class FileLock {
     while (true) {
       try {
         await fs.mkdir(lockPath);
-        const owner: LockOwner = { pid: process.pid, ownerId };
-        await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(owner));
-        return;
+        try {
+          const owner: LockOwner = { pid: process.pid, ownerId };
+          await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(owner));
+          return;
+        } catch (error) {
+          await fs.rm(lockPath, { recursive: true, force: true });
+          throw error;
+        }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
           throw error;
         }
       }
 
-      if (!(await this.ownerIsAlive(lockPath))) {
-        await this.removeDeadLock(lockPath);
+      const owner = await this.readOwner(lockPath);
+      if (owner && !processIsAlive(owner.pid)) {
+        await this.removeDeadLock(lockPath, owner.ownerId);
+        continue;
+      }
+      if (!owner && (await this.initializationExpired(lockPath))) {
+        await this.removeDeadLock(lockPath, undefined);
         continue;
       }
       await delay(this.retryDelayMs);
     }
   }
 
-  private async ownerIsAlive(lockPath: string): Promise<boolean> {
+  private async readOwner(lockPath: string): Promise<LockOwner | undefined> {
     try {
-      const owner = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as LockOwner;
-      return processIsAlive(owner.pid);
+      return JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as LockOwner;
     } catch {
-      return true;
+      return undefined;
     }
   }
 
-  private async removeDeadLock(lockPath: string): Promise<void> {
+  private async initializationExpired(lockPath: string): Promise<boolean> {
+    try {
+      const stat = await fs.stat(lockPath);
+      return Date.now() - stat.mtimeMs >= this.initializationTimeoutMs;
+    } catch {
+      return false;
+    }
+  }
+
+  private async removeDeadLock(lockPath: string, expectedOwnerId: string | undefined): Promise<void> {
+    const currentOwner = await this.readOwner(lockPath);
+    if (expectedOwnerId ? currentOwner?.ownerId !== expectedOwnerId : currentOwner !== undefined) {
+      return;
+    }
+
     const stalePath = `${lockPath}.${process.pid}.${randomUUID()}.stale`;
     try {
       await fs.rename(lockPath, stalePath);
-      await fs.rm(stalePath, { recursive: true, force: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        return;
-      }
+    } catch {
+      return;
     }
+
+    const movedOwner = await this.readOwner(stalePath);
+    const removedExpectedOwner = expectedOwnerId
+      ? movedOwner?.ownerId === expectedOwnerId
+      : movedOwner === undefined;
+    if (!removedExpectedOwner) {
+      try {
+        await fs.rename(stalePath, lockPath);
+      } catch {
+        // Another waiter may already have restored or replaced the lock.
+      }
+      return;
+    }
+    await fs.rm(stalePath, { recursive: true, force: true });
   }
 
   private async release(lockPath: string, ownerId: string): Promise<void> {
     try {
-      const owner = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as LockOwner;
-      if (owner.ownerId === ownerId) {
+      const owner = await this.readOwner(lockPath);
+      if (owner?.ownerId === ownerId) {
         await fs.unlink(path.join(lockPath, "owner.json"));
         await fs.rmdir(lockPath);
       }

@@ -77,4 +77,35 @@ describe("FileLock", () => {
 
     assert.equal(await lock.runExclusive("repo", async () => "recovered"), "recovered");
   });
+
+  it("recovers an empty lock left by an initialization crash", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-empty-"));
+    const lockPath = path.join(root, "locks", `${createHash("sha256").update("repo").digest("hex")}.lock`);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.utimes(lockPath, new Date(0), new Date(0));
+    const lock = new FileLock(root, { retryDelayMs: 5, heartbeatIntervalMs: 10, initializationTimeoutMs: 10 });
+
+    assert.equal(await lock.runExclusive("repo", async () => "recovered"), "recovered");
+  });
+
+  it("does not remove a newly acquired lock while racing to recover a dead owner", async () => {
+    for (let iteration = 0; iteration < 20; iteration += 1) {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-lock-recovery-race-"));
+      const lockPath = path.join(root, "locks", `${createHash("sha256").update("repo").digest("hex")}.lock`);
+      await fs.mkdir(lockPath, { recursive: true });
+      await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid: 99_999_999, ownerId: "dead" }));
+      const first = new FileLock(root, { retryDelayMs: 1, heartbeatIntervalMs: 5 });
+      const second = new FileLock(root, { retryDelayMs: 1, heartbeatIntervalMs: 5 });
+      let active = 0;
+      let maximumActive = 0;
+      const run = (lock: FileLock) => lock.runExclusive("repo", async () => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await delay(2);
+        active -= 1;
+      });
+      await Promise.all([run(first), run(second)]);
+      assert.equal(maximumActive, 1);
+    }
+  });
 });

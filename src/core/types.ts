@@ -51,6 +51,11 @@ export interface RemoteFileState {
   content: Buffer;
 }
 
+export interface LocalWriteObserver {
+  expectWrite(targetPath: string, content: Buffer): void;
+  expectDelete(targetPath: string): void;
+}
+
 export type LocalOnlyDecision = "upload" | "skip";
 export type ConflictDecision = "pull" | "upload" | "skip";
 

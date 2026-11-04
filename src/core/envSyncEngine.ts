@@ -8,6 +8,7 @@ import { SyncStateStore } from "./syncStateStore";
 import { decideThreeWay, ThreeWayTrigger } from "./threeWaySync";
 import {
   ConfigRepoSettings,
+  LocalWriteObserver,
   Logger,
   OpenSyncResult,
   PushSyncResult,
@@ -87,11 +88,15 @@ export class EnvSyncEngine {
     await this.configRepoManager.verifyRemote(settings);
   }
 
-  async syncOnWorkspaceOpen(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<OpenSyncResult> {
+  async syncOnWorkspaceOpen(
+    settings: ConfigRepoSettings,
+    context: WorkspaceSyncContext,
+    observer?: LocalWriteObserver
+  ): Promise<OpenSyncResult> {
     return this.configRepoManager.runExclusive(settings, async () => {
       const repo = await this.configRepoManager.ensureReady(settings);
       await this.configRepoManager.refresh(repo);
-      const result = await this.runSync(repo, settings, context, "open");
+      const result = await this.runSync(repo, settings, context, "open", observer);
       return {
         uploadedPaths: result.uploadedPaths,
         pulledPaths: result.pulledPaths,
@@ -100,11 +105,15 @@ export class EnvSyncEngine {
     });
   }
 
-  async syncLocalChanges(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<PushSyncResult> {
+  async syncLocalChanges(
+    settings: ConfigRepoSettings,
+    context: WorkspaceSyncContext,
+    observer?: LocalWriteObserver
+  ): Promise<PushSyncResult> {
     return this.configRepoManager.runExclusive(settings, async () => {
       const repo = await this.configRepoManager.ensureReady(settings);
       await this.configRepoManager.refresh(repo);
-      const result = await this.runSync(repo, settings, context, "change");
+      const result = await this.runSync(repo, settings, context, "change", observer);
       return {
         pushedPaths: result.pushedPaths,
         deletedPaths: result.deletedPaths,
@@ -120,7 +129,8 @@ export class EnvSyncEngine {
     repo: ReadyConfigRepo,
     settings: ConfigRepoSettings,
     context: WorkspaceSyncContext,
-    trigger: ThreeWayTrigger
+    trigger: ThreeWayTrigger,
+    observer?: LocalWriteObserver
   ): Promise<InternalSyncResult> {
     const { remoteRoot, inherited } = await prepareBranchStore(repo, context);
     const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots, context.ignoredDirectoryNames);
@@ -162,6 +172,7 @@ export class EnvSyncEngine {
       }
 
       if (decision === "pull" && remoteContent) {
+        observer?.expectWrite(localTargetPath, remoteContent);
         await writeFileEnsuringDir(localTargetPath, remoteContent);
         result.pulledPaths.push(relativePath);
         updateBaseline(nextBaseline, relativePath, remoteHash);
@@ -169,6 +180,7 @@ export class EnvSyncEngine {
       }
 
       if (decision === "delete-local") {
+        observer?.expectDelete(localTargetPath);
         await removeFileIfExists(localTargetPath);
         await pruneEmptyDirectories(context.workspacePath, localTargetPath);
         result.deletedLocalPaths.push(relativePath);
@@ -205,9 +217,19 @@ export class EnvSyncEngine {
       }
 
       if (choice === "pull" && remoteContent) {
+        observer?.expectWrite(localTargetPath, remoteContent);
         await writeFileEnsuringDir(localTargetPath, remoteContent);
         result.pulledPaths.push(relativePath);
         updateBaseline(nextBaseline, relativePath, remoteHash);
+        continue;
+      }
+
+      if (choice === "pull" && !remoteContent) {
+        observer?.expectDelete(localTargetPath);
+        await removeFileIfExists(localTargetPath);
+        await pruneEmptyDirectories(context.workspacePath, localTargetPath);
+        result.deletedLocalPaths.push(relativePath);
+        updateBaseline(nextBaseline, relativePath, undefined);
         continue;
       }
 
@@ -219,10 +241,22 @@ export class EnvSyncEngine {
           result.pushedPaths.push(relativePath);
         }
         updateBaseline(nextBaseline, relativePath, localHash);
+        continue;
+      }
+
+      if (choice === "upload" && !localContent) {
+        await removeFileIfExists(remoteTargetPath);
+        await pruneEmptyDirectories(remoteRoot, remoteTargetPath);
+        result.deletedPaths.push(relativePath);
+        updateBaseline(nextBaseline, relativePath, undefined);
       }
     }
 
+    const hasRemoteChanges = inherited || result.uploadedPaths.length > 0 || result.pushedPaths.length > 0 || result.deletedPaths.length > 0;
     result.committed = await this.configRepoManager.commitProjectChanges(repo, remoteRoot, commitMessage(context));
+    if (hasRemoteChanges && !result.committed) {
+      throw new Error("配置仓库未能提交本轮 env 变更，同步状态未更新。");
+    }
     if (inherited) {
       this.logger.info(`已初始化 ${context.project.slug} 的分支 ${context.branch} 存储；已提交：${result.committed ? "是" : "否"}。`);
     }

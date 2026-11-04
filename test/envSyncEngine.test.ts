@@ -9,6 +9,7 @@ import { EnvSyncEngine } from "../src/core/envSyncEngine";
 import { compilePathRegexes } from "../src/core/pathRegex";
 import { SyncStateStore } from "../src/core/syncStateStore";
 import { Logger, SyncPrompts, WorkspaceSyncContext } from "../src/core/types";
+import { WriteEventSuppressor } from "../src/core/writeEventSuppressor";
 
 class InMemoryLogger implements Logger {
   readonly messages: string[] = [];
@@ -126,7 +127,7 @@ describe("EnvSyncEngine", () => {
     },
     async refresh(): Promise<void> {},
       async commitProjectChanges(): Promise<boolean> {
-        return false;
+        return true;
       }
     } as unknown as ConfigRepoManager;
 
@@ -600,6 +601,85 @@ describe("EnvSyncEngine", () => {
     assert.deepEqual(await stateStore.read(settings, context), new Map([[".env", oldHash]]));
     await engine.syncLocalChanges(settings, context);
     assert.deepEqual(await stateStore.read(settings, context), new Map([[".env", newHash]]));
+  });
+
+  it("applies an uploaded local deletion to the remote", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-upload-delete-"));
+    const workspacePath = path.join(root, "workspace");
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const context = createContext(workspacePath);
+    const stateStore = new SyncStateStore(path.join(root, "state"));
+    await initializeBranchStore(remoteStorePath);
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(remoteStorePath, ".env"), "REMOTE=1\n");
+    await stateStore.write(settings, context, new Map([[".env", createHash("sha256").update("BASE=1\n").digest("hex")]]));
+    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), new StaticPrompts("upload", "upload"), new InMemoryLogger(), stateStore);
+
+    const result = await engine.syncLocalChanges(settings, context);
+
+    assert.deepEqual(result.deletedPaths, [".env"]);
+    await assert.rejects(fs.access(path.join(remoteStorePath, ".env")));
+  });
+
+  it("applies a pulled remote deletion to the local workspace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-pull-delete-"));
+    const workspacePath = path.join(root, "workspace");
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const context = createContext(workspacePath);
+    const stateStore = new SyncStateStore(path.join(root, "state"));
+    await initializeBranchStore(remoteStorePath);
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(workspacePath, ".env"), "LOCAL=1\n");
+    await stateStore.write(settings, context, new Map([[".env", createHash("sha256").update("BASE=1\n").digest("hex")]]));
+    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), new StaticPrompts("upload", "pull"), new InMemoryLogger(), stateStore);
+
+    const result = await engine.syncLocalChanges(settings, context);
+
+    assert.deepEqual(result.deletedLocalPaths, [".env"]);
+    await assert.rejects(fs.access(path.join(workspacePath, ".env")));
+  });
+
+  it("keeps the old baseline when remote writes are not committed", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-uncommitted-state-"));
+    const workspacePath = path.join(root, "workspace");
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const context = createContext(workspacePath);
+    const stateStore = new SyncStateStore(path.join(root, "state"));
+    const oldHash = createHash("sha256").update("OLD=1\n").digest("hex");
+    await initializeBranchStore(remoteStorePath);
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(remoteStorePath, ".env"), "OLD=1\n");
+    await fs.writeFile(path.join(workspacePath, ".env"), "NEW=1\n");
+    await stateStore.write(settings, context, new Map([[".env", oldHash]]));
+    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot, () => false), new StaticPrompts("upload", "upload"), new InMemoryLogger(), stateStore);
+
+    await assert.rejects(engine.syncLocalChanges(settings, context), /未能提交/);
+    assert.deepEqual(await stateStore.read(settings, context), new Map([[".env", oldHash]]));
+  });
+
+  it("registers pulled content before writing so later user saves are not suppressed", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-observer-order-"));
+    const workspacePath = path.join(root, "workspace");
+    const remoteGitRoot = path.join(root, "remote");
+    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
+    const context = createContext(workspacePath);
+    await initializeBranchStore(remoteStorePath);
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(remoteStorePath, ".env"), "REMOTE=1\n");
+    const suppressor = new WriteEventSuppressor();
+    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot), new StaticPrompts(), new InMemoryLogger());
+
+    await engine.syncOnWorkspaceOpen(settings, context, suppressor);
+    await fs.writeFile(path.join(workspacePath, ".env"), "USER=1\n");
+
+    assert.equal(await suppressor.shouldSuppress(path.join(workspacePath, ".env")), false);
   });
 
   it("prunes ignored directories and internal files from synchronization", async () => {

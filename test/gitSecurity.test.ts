@@ -45,4 +45,11 @@ describe("Git credential redaction", () => {
     assert.ok(!summary.logMessage.includes("token@"));
     assert.ok(!summary.notificationMessage.includes("token@"));
   });
+
+  it("redacts credentials even when URL parsing fails", () => {
+    const redacted = redactRepoUrl("https://token:secret@:bad?private_token=abc");
+    assert.ok(!redacted.includes("token:secret"));
+    assert.ok(!redacted.includes("abc"));
+    assert.ok(redacted.includes("REDACTED"));
+  });
 });

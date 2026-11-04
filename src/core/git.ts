@@ -24,7 +24,9 @@ export function redactRepoUrl(value: string): string {
       }
       return parsed.toString();
     } catch {
-      return rawUrl;
+      return rawUrl
+        .replace(/\/\/[^/\s@]+@/, "//REDACTED@")
+        .replace(/([?&](?:access_token|token|private_token|auth|key)=)[^&\s]*/gi, "$1REDACTED");
     }
   });
 }

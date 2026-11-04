@@ -34,6 +34,7 @@ export class ConfigRepoManager {
     const repoPath = path.join(this.baseStoragePath, "config-repos", hashRemoteUrl(settings.repoUrl));
     await fs.mkdir(path.dirname(repoPath), { recursive: true });
     await this.git.ensureRepoClone(settings.repoUrl, repoPath);
+    await this.git.run(["fetch", "--prune", "origin"], { cwd: repoPath });
     await this.checkoutBranch(repoPath, settings.branch);
     return { repoPath, branch: settings.branch };
   }
@@ -48,7 +49,7 @@ export class ConfigRepoManager {
 
   async commitProjectChanges(repo: ReadyConfigRepo, projectStorePath: string, message: string): Promise<boolean> {
     const relativeProjectPath = path.relative(repo.repoPath, projectStorePath) || ".";
-    await this.git.run(["add", "-A", "--", relativeProjectPath], { cwd: repo.repoPath });
+    await this.git.run(["add", "-f", "-A", "--", relativeProjectPath], { cwd: repo.repoPath });
 
     const hasChanges = await this.git.tryRun(["diff", "--cached", "--quiet", "--", relativeProjectPath], {
       cwd: repo.repoPath

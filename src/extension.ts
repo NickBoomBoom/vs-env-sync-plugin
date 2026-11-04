@@ -273,8 +273,7 @@ class WorkspaceSession implements vscode.Disposable {
           }
           this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 执行打开工作区同步。`);
           this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行打开工作区同步。`);
-          const result = await this.engine.syncOnWorkspaceOpen(settings, context);
-          await this.suppressWatcherEvents(context.workspacePath, result.pulledPaths, []);
+          const result = await this.engine.syncOnWorkspaceOpen(settings, context, this.writeEventSuppressor);
           const syncSummaryParts: string[] = [];
           if (result.pulledPaths.length > 0) {
             syncSummaryParts.push(`已拉取 ${summarizePaths(result.pulledPaths)}`);
@@ -373,8 +372,7 @@ class WorkspaceSession implements vscode.Disposable {
 
             this.statusBar.showSyncing(`正在为 ${formatProjectLabel(context)} 推送 env 变更。`);
             this.logger.info(`正在为 ${context.project.slug}（${context.workspaceName}）执行推送同步。`);
-            const result = await this.engine.syncLocalChanges(settings, context);
-            await this.suppressWatcherEvents(context.workspacePath, result.pulledPaths, result.deletedLocalPaths);
+            const result = await this.engine.syncLocalChanges(settings, context, this.writeEventSuppressor);
             const hasChanges = result.committed || [
               ...result.pushedPaths,
               ...result.deletedPaths,
@@ -412,21 +410,6 @@ class WorkspaceSession implements vscode.Disposable {
         }
       });
     }, 3000);
-  }
-
-  private async suppressWatcherEvents(
-    projectPath: string,
-    pulledPaths: readonly string[],
-    deletedPaths: readonly string[]
-  ): Promise<void> {
-    for (const relativePath of pulledPaths) {
-      const absolutePath = path.join(projectPath, normalizeRelativePath(relativePath));
-      this.writeEventSuppressor.expectWrite(absolutePath, await fs.readFile(absolutePath));
-    }
-    for (const relativePath of deletedPaths) {
-      const absolutePath = path.join(projectPath, normalizeRelativePath(relativePath));
-      this.writeEventSuppressor.expectDelete(absolutePath);
-    }
   }
 
   private async isSuppressedAbsolutePath(absolutePath: string): Promise<boolean> {

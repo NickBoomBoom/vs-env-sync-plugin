@@ -335,6 +335,48 @@ describe("git integration", () => {
     assert.equal(await fs.readFile(path.join(verifyClone, "first.txt"), "utf8"), "FIRST=1\n");
   });
 
+  it("fetches before choosing a new config branch", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-new-config-branch-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, "README.md", "BASE=1\n");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const repo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "main" });
+    await git(gitCli, repo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, repo.repoPath, "config", "user.name", "Test User");
+    await fs.writeFile(path.join(repo.repoPath, "wrong.txt"), "WRONG=1\n");
+    await git(gitCli, repo.repoPath, "add", "wrong.txt");
+    await git(gitCli, repo.repoPath, "commit", "-m", "wrong branch commit");
+    await git(gitCli, seedClone, "checkout", "-b", "backup");
+    await git(gitCli, seedClone, "push", "-u", "origin", "backup");
+
+    const backupRepo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "backup" });
+    await manager.refresh(backupRepo);
+
+    const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
+    await git(gitCli, verifyClone, "checkout", "backup");
+    await assert.rejects(fs.access(path.join(verifyClone, "wrong.txt")));
+  });
+
+  it("syncs env files even when the config repository ignores them", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-ignored-env-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, ".gitignore", ".env\n");
+    const workspacePath = path.join(root, "workspace");
+    await fs.mkdir(workspacePath, { recursive: true });
+    await fs.writeFile(path.join(workspacePath, ".env"), "LOCAL=1\n");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const engine = new EnvSyncEngine(manager, new TestPrompts(), new TestLogger(), new SyncStateStore(path.join(root, "state")));
+
+    await engine.syncLocalChanges({ repoUrl: bareConfigRepo, branch: "main" }, createContext(workspacePath));
+
+    const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
+    assert.equal(await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env")), "utf8"), "LOCAL=1\n");
+  });
+
   it("serializes concurrent managers sharing one config clone", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-managers-"));
     const gitCli = new GitCli();
