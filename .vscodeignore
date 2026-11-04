@@ -10,3 +10,7 @@ package-lock.json
 .tmp-test-workspace/**
 node_modules/.cache/**
 dist/test/**
+.superpowers/**
+docs/superpowers/**
+.worktrees/**
+*.vsix
