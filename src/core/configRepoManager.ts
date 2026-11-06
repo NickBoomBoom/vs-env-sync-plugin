@@ -66,10 +66,32 @@ export class ConfigRepoManager {
   private async updateFromRemote(repo: ReadyConfigRepo): Promise<void> {
     await this.git.run(["fetch", "--prune", "origin"], { cwd: repo.repoPath });
     if (await this.hasRemoteBranch(repo.repoPath, repo.branch)) {
-      await this.git.run(["rebase", "--autostash", `origin/${repo.branch}`], { cwd: repo.repoPath });
+      const trackedStash = await this.stashChanges(repo.repoPath, false);
+      const untrackedStash = await this.stashChanges(repo.repoPath, true);
+      await this.git.run(["rebase", `origin/${repo.branch}`], { cwd: repo.repoPath });
+      if (untrackedStash) {
+        await this.git.run(["restore", `--source=${untrackedStash}^3`, "--worktree", "--", "."], {
+          cwd: repo.repoPath
+        });
+        await this.git.run(["stash", "drop", "stash@{0}"], { cwd: repo.repoPath });
+      }
+      if (trackedStash) {
+        await this.git.run(["stash", "pop", "stash@{0}"], { cwd: repo.repoPath });
+      }
       return;
     }
     this.logger.info(`远端分支 ${repo.branch} 暂不存在，已跳过拉取。`);
+  }
+
+  private async stashChanges(repoPath: string, includeAll: boolean): Promise<string | undefined> {
+    const previousStash = await this.git.tryRun(["rev-parse", "--verify", "refs/stash"], { cwd: repoPath });
+    const args = ["stash", "push", "-m", includeAll ? "env-sync untracked before rebase" : "env-sync tracked before rebase"];
+    if (includeAll) {
+      args.push("--all");
+    }
+    await this.git.run(args, { cwd: repoPath });
+    const currentStash = await this.git.tryRun(["rev-parse", "--verify", "refs/stash"], { cwd: repoPath });
+    return currentStash && currentStash !== previousStash ? currentStash : undefined;
   }
 
   private async hasUnpushedCommits(repo: ReadyConfigRepo): Promise<boolean> {

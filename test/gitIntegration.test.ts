@@ -414,6 +414,39 @@ describe("git integration", () => {
     assert.equal(await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env.b")), "utf8"), "B=1\n");
   });
 
+  it("preserves untracked and ignored files when the remote starts tracking their paths", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-untracked-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, "README.md", "BASE=1\n");
+    await fs.writeFile(path.join(seedClone, ".gitignore"), ".env\n");
+    await git(gitCli, seedClone, "add", ".gitignore");
+    await git(gitCli, seedClone, "commit", "-m", "ignore env");
+    await git(gitCli, seedClone, "push");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const repo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "main" });
+    await git(gitCli, repo.repoPath, "config", "user.email", "test@example.com");
+    await git(gitCli, repo.repoPath, "config", "user.name", "Test User");
+    await fs.writeFile(path.join(repo.repoPath, "README.md"), "LOCAL=1\n");
+    await fs.writeFile(path.join(repo.repoPath, ".env"), "LOCAL=2\n");
+    await fs.mkdir(path.join(repo.repoPath, "nested"), { recursive: true });
+    await fs.writeFile(path.join(repo.repoPath, "nested", ".env.example"), "SHARED=1\n");
+    await fs.writeFile(path.join(seedClone, ".env"), "REMOTE=1\n");
+    await fs.mkdir(path.join(seedClone, "nested"), { recursive: true });
+    await fs.writeFile(path.join(seedClone, "nested", ".env.example"), "SHARED=1\n");
+    await git(gitCli, seedClone, "add", "-f", "-A");
+    await git(gitCli, seedClone, "commit", "-m", "track env files");
+    await git(gitCli, seedClone, "push");
+
+    await manager.refresh(repo);
+
+    assert.equal((await fs.readFile(path.join(repo.repoPath, "README.md"), "utf8")).replace(/\r\n/g, "\n"), "LOCAL=1\n");
+    assert.equal((await fs.readFile(path.join(repo.repoPath, ".env"), "utf8")).replace(/\r\n/g, "\n"), "LOCAL=2\n");
+    assert.equal((await fs.readFile(path.join(repo.repoPath, "nested", ".env.example"), "utf8")).replace(/\r\n/g, "\n"), "SHARED=1\n");
+    assert.equal(await git(gitCli, repo.repoPath, "stash", "list"), "");
+  });
+
   it("rebases onto the configured branch when a concurrent fetch writes multiple branches", async () => {
     class ConcurrentFetchGitCli extends GitCli {
       async run(args: string[], options: { cwd?: string } = {}): Promise<string> {

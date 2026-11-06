@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- Fixed rebase failures and prevented local data loss when the remote starts tracking previously untracked or ignored env files.
+
 ## 0.2.2
 
 - Added per-device three-way sync baselines so remote additions from other devices are never mistaken for local deletions.
