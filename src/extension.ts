@@ -3,6 +3,8 @@ import path from "node:path";
 import * as vscode from "vscode";
 
 import { ConfigRepoManager } from "./core/configRepoManager";
+import { ConfigRepoDiagnosis, ConfigRepoMaintenance } from "./core/configRepoMaintenance";
+
 import { EnvSyncEngine } from "./core/envSyncEngine";
 import { summarizeSyncError } from "./core/errorSummary";
 import { GitCli, redactRepoUrl } from "./core/git";
@@ -28,6 +30,7 @@ import {
   EXTENSION_NAMESPACE,
   Logger,
   NotificationLevel,
+  StorageMigrationChoice,
   WorkspaceSyncContext
 } from "./core/types";
 import { WriteEventSuppressor } from "./core/writeEventSuppressor";
@@ -132,6 +135,22 @@ function buildSyncSummary(result: {
 }
 
 class VscodePrompts {
+  async chooseStorageMigration(context: WorkspaceSyncContext, details: StorageMigrationChoice): Promise<"source" | "target" | "cancel"> {
+    const paths = details.conflictingPaths.slice(0, 10).join("、") || "旧版目录缺少完整身份信息，需要你确认来源";
+    const decision = await vscode.window.showWarningMessage(
+      `Env Sync：确认 ${context.project.slug} [${context.branch}] 的存储迁移来源`,
+      {
+        modal: true,
+        detail: `来源：${details.sourcePath}\n目标：${details.targetPath}\n冲突/待确认：${paths}` +
+          "\n采用来源快照：必要时先把目标旧文件完整归档到目标内的 .env-sync-archive，再替换活动快照；旧来源不删除。" +
+          "\n保留可读目录：不合并来源文件，后续与本地 env 的差异另行确认。" +
+          "\n归档包含 env 密钥，将随该分支提交到配置仓库。取消则停止本轮同步，不推进基线。"
+      },
+      "采用来源快照", "保留可读目录"
+    );
+    return decision === "采用来源快照" ? "source" : decision === "保留可读目录" ? "target" : "cancel";
+  }
+
   async chooseLocalOnly(context: WorkspaceSyncContext, relativePath: string): Promise<"upload" | "skip"> {
     const projectLabel = formatProjectLabel(context);
     const decision = await vscode.window.showWarningMessage(
@@ -627,7 +646,10 @@ class WorkspaceSession implements vscode.Disposable {
     const summary = summarizeSyncError(error, phase);
     this.logger.error(summary.logMessage);
     this.statusBar.showError(summary.statusMessage);
-    void vscode.window.showErrorMessage(summary.notificationMessage);
+    void vscode.window.showErrorMessage(summary.notificationMessage, "诊断配置仓库", "修复配置仓库").then((action) => {
+      if (action === "诊断配置仓库") void vscode.commands.executeCommand("envSync.diagnoseConfigRepo");
+      if (action === "修复配置仓库") void vscode.commands.executeCommand("envSync.repairConfigRepo");
+    });
   }
 }
 
@@ -769,7 +791,119 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   });
 
-  context.subscriptions.push(outputChannel, statusBar, initializeCommand, showOutputCommand, coordinator);
+  const maintenance = new ConfigRepoMaintenance(context.globalStorageUri.fsPath, configRepoManager, git, logger);
+  const maintenanceSettings = (): ConfigRepoSettings | undefined => {
+    if (!vscode.workspace.isTrusted) {
+      void vscode.window.showWarningMessage("Env Sync：请先信任当前工作区再运行维护命令。");
+      return undefined;
+    }
+    const configuration = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
+    const repoUrl = configuration.get<string>("configRepoUrl", "").trim();
+    if (!repoUrl) {
+      void vscode.window.showWarningMessage("Env Sync：请先运行“Env Sync：初始化配置仓库”。");
+      return undefined;
+    }
+    return {
+      repoUrl,
+      branch: configuration.get<string>("configRepoBranch", DEFAULT_CONFIG_REPO_BRANCH).trim() || DEFAULT_CONFIG_REPO_BRANCH
+    };
+  };
+  const reportMaintenanceError = (error: unknown): void => {
+    const summary = summarizeSyncError(error, "配置仓库维护");
+    logger.error(redactRepoUrl(summary.logMessage));
+    statusBar.showError("配置仓库维护失败，请查看输出。");
+    outputChannel.show(true);
+    void vscode.window.showErrorMessage("Env Sync：配置仓库维护失败。详情及备份路径请查看输出。");
+  };
+  const logDiagnosis = (diagnosis: ConfigRepoDiagnosis): void => {
+    logger.info(redactRepoUrl([
+      "配置仓库诊断（只读，不连接远端）：",
+      `缓存路径：${diagnosis.repoPath}`,
+      `配置分支：${diagnosis.configuredBranch}`,
+      `缓存存在：${diagnosis.exists ? "是" : "否（尚未克隆）"}`,
+      `当前分支：${diagnosis.exists ? diagnosis.currentBranch || "detached HEAD / rebase 中" : "无"}`,
+      `rebase 状态：${diagnosis.rebase ?? "无"}`,
+      `工作树状态：\n${diagnosis.status || "无"}`,
+      `stash 列表（不会自动恢复或删除）：\n${diagnosis.stashes || "无"}`
+    ].join("\n")));
+    outputChannel.show(true);
+  };
+  const diagnoseCommand = vscode.commands.registerCommand("envSync.diagnoseConfigRepo", async () => {
+    const settings = maintenanceSettings();
+    if (!settings) return;
+    try {
+      logDiagnosis(await queue.enqueue(() => maintenance.diagnose(settings)));
+    } catch (error) {
+      reportMaintenanceError(error);
+    }
+  });
+  const repairCommand = vscode.commands.registerCommand("envSync.repairConfigRepo", async () => {
+    const settings = maintenanceSettings();
+    if (!settings) return;
+    try {
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Env Sync：检查、备份并修复配置仓库", cancellable: false },
+        () => queue.enqueue(() => maintenance.repair(settings, async (diagnosis) => {
+          logDiagnosis(diagnosis);
+          const decision = await vscode.window.showWarningMessage(
+            "Env Sync：备份配置仓库并撤销未完成的 rebase？",
+            {
+              modal: true,
+              detail: `仅操作插件配置缓存：${diagnosis.repoPath}\n检测到 ${diagnosis.rebase}。` +
+                "\n将先完整备份（包含 .git 和 env 密钥），再运行 git rebase --abort。" +
+                "\n这会放弃本次变基及其冲突解决进度；stash 不会自动恢复或删除，业务项目不会被操作。" +
+                "\n备份保存在插件存储目录的 repair-backups 中，请妥善保管。"
+            },
+            "备份并撤销 rebase"
+          );
+          return decision === "备份并撤销 rebase";
+        }))
+      );
+      if (result.outcome === "cancelled") return;
+      logDiagnosis(result.diagnosis);
+      if (result.outcome === "not-needed") {
+        void vscode.window.showInformationMessage("Env Sync：没有未完成的 rebase，无需修复。其他同步问题请查看诊断输出。");
+        return;
+      }
+      statusBar.showReady("未完成的 rebase 已撤销，可以重新同步。");
+      const decision = await vscode.window.showInformationMessage(
+        `Env Sync：已撤销 rebase。备份：${result.backupPath}。stash 已保留；实际内容冲突可能仍需处理。`,
+        "立即重新同步"
+      );
+      if (decision === "立即重新同步") {
+        await vscode.commands.executeCommand("envSync.syncNow");
+      }
+    } catch (error) {
+      reportMaintenanceError(error);
+    }
+  });
+  const openRepoCommand = vscode.commands.registerCommand("envSync.openConfigRepo", async () => {
+    const settings = maintenanceSettings();
+    if (!settings) return;
+    try {
+      const diagnosis = await queue.enqueue(() => maintenance.diagnose(settings));
+      if (!diagnosis.exists) {
+        void vscode.window.showInformationMessage("Env Sync：配置缓存尚未创建，请先运行立即重新同步。");
+        return;
+      }
+      await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(path.join(diagnosis.repoPath, ".git")));
+    } catch (error) {
+      reportMaintenanceError(error);
+    }
+  });
+  const syncNowCommand = vscode.commands.registerCommand("envSync.syncNow", async () => {
+    if (!maintenanceSettings()) return;
+    try {
+      await coordinator.refreshSessions();
+    } catch (error) {
+      reportMaintenanceError(error);
+    }
+  });
+
+  context.subscriptions.push(
+    outputChannel, statusBar, initializeCommand, showOutputCommand,
+    diagnoseCommand, repairCommand, openRepoCommand, syncNowCommand, coordinator
+  );
   await coordinator.start();
 }
 

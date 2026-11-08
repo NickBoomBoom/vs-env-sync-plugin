@@ -91,7 +91,10 @@ export class GitCli {
       return;
     } catch {
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await this.run(["clone", repoUrl, targetPath]);
+      const args = process.platform === "win32"
+        ? ["-c", "core.longpaths=true", "clone", repoUrl, targetPath]
+        : ["clone", repoUrl, targetPath];
+      await this.run(args);
     }
   }
 

@@ -8,6 +8,7 @@ import { ConfigRepoManager } from "../src/core/configRepoManager";
 import { EnvSyncEngine } from "../src/core/envSyncEngine";
 import { compilePathRegexes } from "../src/core/pathRegex";
 import { SyncStateStore } from "../src/core/syncStateStore";
+import { branchDirectoryName, hashedBranchStorePath } from "../src/core/storagePaths";
 import { Logger, SyncPrompts, WorkspaceSyncContext } from "../src/core/types";
 import { WriteEventSuppressor } from "../src/core/writeEventSuppressor";
 
@@ -61,24 +62,25 @@ function createContext(workspacePath: string): WorkspaceSyncContext {
   };
 }
 
-function storageHash(value: string): string {
-  return createHash("sha256").update(`v1:${value}`).digest("hex");
+function readableBranchStorePath(remoteGitRoot: string, branch = "main"): string {
+  return path.join(remoteGitRoot, "projects", "github.com", "team", "app", "branches", branchDirectoryName(branch));
 }
 
-function hashedBranchStorePath(remoteGitRoot: string, branch = "main"): string {
-  return path.join(
-    remoteGitRoot,
-    "projects",
-    "github.com",
-    storageHash("team/app"),
-    "branches",
-    storageHash(branch)
-  );
+function branchMetadata(branch = "main") {
+  return { version: 2, layout: "readable-v2", project: { host: "github.com", path: "team/app" }, branch };
 }
 
-async function initializeBranchStore(branchRoot: string): Promise<void> {
+async function initializeBranchStore(branchRoot: string, branch = "main"): Promise<void> {
   await fs.mkdir(branchRoot, { recursive: true });
-  await fs.writeFile(path.join(branchRoot, "env-sync-branch.json"), "{\"version\":1}\n");
+  await fs.writeFile(path.join(branchRoot, "env-sync-branch.json"), `${JSON.stringify(branchMetadata(branch))}\n`);
+}
+
+async function assertCurrentBranchMetadata(branchRoot: string, branch = "main"): Promise<void> {
+  const metadata = JSON.parse(await fs.readFile(path.join(branchRoot, "env-sync-branch.json"), "utf8"));
+  assert.equal(metadata.version, 2);
+  assert.equal(metadata.layout, "readable-v2");
+  assert.deepEqual(metadata.project, { host: "github.com", path: "team/app" });
+  assert.equal(metadata.branch, branch);
 }
 
 function createConfigRepoManager(remoteGitRoot: string, onCommit: () => void | boolean = () => {}): ConfigRepoManager {
@@ -102,12 +104,55 @@ function createConfigRepoManager(remoteGitRoot: string, onCommit: () => void | b
 }
 
 describe("EnvSyncEngine", () => {
+  for (const scenario of ["unchanged", "unmatched", "skipped", "failed"] as const) {
+    it(`reports storage paths and a truthful completion for ${scenario} syncs`, async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-log-"));
+      try {
+        const workspacePath = path.join(root, "workspace");
+        const remoteGitRoot = path.join(root, "remote");
+        const remoteStorePath = readableBranchStorePath(remoteGitRoot, "v3");
+        await fs.mkdir(workspacePath, { recursive: true });
+        await initializeBranchStore(remoteStorePath, "v3");
+        if (scenario !== "unmatched") {
+          await fs.writeFile(path.join(workspacePath, ".env"), "SECRET=never-log-this\n");
+          await fs.writeFile(path.join(remoteStorePath, ".env"), scenario === "skipped" ? "SECRET=other\n" : "SECRET=never-log-this\n");
+        }
+        const logger = new InMemoryLogger();
+        const manager = createConfigRepoManager(remoteGitRoot, () => {
+          if (scenario === "failed") throw new Error("commit failed");
+          return false;
+        });
+        const engine = new EnvSyncEngine(manager, new StaticPrompts("skip", "skip"), logger);
+        const context = { ...createContext(workspacePath), branch: "v3" };
+        const sync = engine.syncOnWorkspaceOpen({ repoUrl: "https://example.com/config.git", branch: "main" }, context);
+        if (scenario === "failed") await assert.rejects(sync, /commit failed/);
+        else await sync;
+        const log = logger.messages.join("\n");
+        assert.ok(log.includes("github.com/team/app [v3] → 配置仓库分支 main"));
+        assert.ok(log.includes(path.relative(remoteGitRoot, remoteStorePath).split(path.sep).join("/")));
+        assert.ok(!log.includes("never-log-this"));
+        assert.equal(log.includes("同步检查完成"), scenario !== "failed");
+        if (scenario === "unchanged") {
+          assert.ok(log.includes("本地 1 个，配置仓库 1 个"));
+          assert.ok(log.includes("无需变更"));
+        }
+        if (scenario === "unmatched") assert.ok(log.includes("本地没有匹配的 env 文件"));
+        if (scenario === "skipped") {
+          assert.ok(log.includes("本轮跳过 1 个文件，尚未同步这些文件：.env"));
+          assert.ok(!log.includes("无需变更"));
+        }
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("pulls missing remote files on workspace open", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-open-"));
     const workspacePath = path.join(root, "workspace");
     const storagePath = path.join(root, "storage");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
 
     await fs.mkdir(workspacePath, { recursive: true });
     await fs.mkdir(remoteStorePath, { recursive: true });
@@ -152,7 +197,7 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-upload-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
 
     await fs.mkdir(workspacePath, { recursive: true });
     await fs.mkdir(remoteStorePath, { recursive: true });
@@ -199,13 +244,14 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-push-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
 
     await fs.mkdir(workspacePath, { recursive: true });
     await fs.mkdir(remoteStorePath, { recursive: true });
     await fs.writeFile(path.join(workspacePath, ".env"), "LOCAL=2\n");
     await fs.writeFile(path.join(remoteStorePath, ".env"), "REMOTE=1\n");
     await fs.writeFile(path.join(remoteStorePath, ".env.old"), "OLD=1\n");
+    await initializeBranchStore(remoteStorePath);
 
     let committed = false;
     const configRepoManager = {
@@ -253,7 +299,7 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-multi-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
 
     await fs.mkdir(path.join(workspacePath, "config"), { recursive: true });
     await fs.mkdir(remoteStorePath, { recursive: true });
@@ -308,7 +354,7 @@ describe("EnvSyncEngine", () => {
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
     const projectRoot = path.join(remoteGitRoot, "projects", "github.com", "team", "app");
-    const encodedBranchRoot = hashedBranchStorePath(remoteGitRoot, "feature/login");
+    const encodedBranchRoot = readableBranchStorePath(remoteGitRoot, "feature/login");
 
     await fs.mkdir(workspacePath, { recursive: true });
     await fs.writeFile(path.join(workspacePath, ".env"), "FEATURE=1\n");
@@ -329,7 +375,7 @@ describe("EnvSyncEngine", () => {
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
     const legacyRoot = path.join(remoteGitRoot, "projects", "github.com", "team", "app");
-    const branchRoot = hashedBranchStorePath(remoteGitRoot);
+    const branchRoot = readableBranchStorePath(remoteGitRoot);
     let commitCount = 0;
 
     await fs.mkdir(workspacePath, { recursive: true });
@@ -358,7 +404,7 @@ describe("EnvSyncEngine", () => {
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
     const legacyRoot = path.join(remoteGitRoot, "projects", "github.com", "team", "app");
-    const branchRoot = hashedBranchStorePath(remoteGitRoot);
+    const branchRoot = readableBranchStorePath(remoteGitRoot);
     let commitCount = 0;
 
     await fs.mkdir(workspacePath, { recursive: true });
@@ -381,17 +427,47 @@ describe("EnvSyncEngine", () => {
     await assert.rejects(fs.access(path.join(branchRoot, ".env")));
   });
 
+  it("upgrades a legacy version1 readable marker without replacing existing target data", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-v1-marker-"));
+    try {
+      const workspacePath = path.join(root, "workspace");
+      const remoteGitRoot = path.join(root, "remote");
+      const branchRoot = readableBranchStorePath(remoteGitRoot);
+      await fs.mkdir(workspacePath, { recursive: true });
+      await fs.mkdir(branchRoot, { recursive: true });
+      await fs.writeFile(path.join(branchRoot, "env-sync-branch.json"), "{\"version\":1}\n");
+      await fs.writeFile(path.join(branchRoot, ".env.keep"), "KEEP=1\n");
+      let commits = 0;
+      const engine = new EnvSyncEngine(
+        createConfigRepoManager(remoteGitRoot, () => { commits += 1; }),
+        new StaticPrompts(),
+        new InMemoryLogger()
+      );
+      const result = await engine.syncOnWorkspaceOpen(
+        { repoUrl: "git@github.com:team/env-config.git", branch: "main" },
+        createContext(workspacePath)
+      );
+      assert.deepEqual(result.pulledPaths, [".env.keep"]);
+      assert.equal(await fs.readFile(path.join(branchRoot, ".env.keep"), "utf8"), "KEEP=1\n");
+      assert.equal(await fs.readFile(path.join(workspacePath, ".env.keep"), "utf8"), "KEEP=1\n");
+      await assertCurrentBranchMetadata(branchRoot);
+      assert.equal(commits, 1);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("updates only the current branch store", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-branch-isolation-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
     const legacyRoot = path.join(remoteGitRoot, "projects", "github.com", "team", "app");
-    const mainRoot = hashedBranchStorePath(remoteGitRoot);
-    const otherRoot = hashedBranchStorePath(remoteGitRoot, "feature/other");
+    const mainRoot = readableBranchStorePath(remoteGitRoot);
+    const otherRoot = readableBranchStorePath(remoteGitRoot, "feature/other");
 
     await fs.mkdir(workspacePath, { recursive: true });
     await initializeBranchStore(mainRoot);
-    await initializeBranchStore(otherRoot);
+    await initializeBranchStore(otherRoot, "feature/other");
     await fs.writeFile(path.join(workspacePath, ".env"), "CURRENT=1\n");
     await fs.mkdir(legacyRoot, { recursive: true });
     await fs.writeFile(path.join(legacyRoot, ".env"), "SHARED=1\n");
@@ -437,20 +513,23 @@ describe("EnvSyncEngine", () => {
 
     assert.deepEqual(result, { uploadedPaths: [], pulledPaths: [], skippedPaths: [] });
     assert.equal(commitCount, 1);
-    await assert.rejects(fs.access(path.join(hashedBranchStorePath(remoteGitRoot), "config", ".env.dev")));
-    await assert.rejects(fs.access(path.join(legacyRoot, "branches", "main")));
+    await assert.rejects(fs.access(path.join(readableBranchStorePath(remoteGitRoot), "config", ".env.dev")));
+    await assert.rejects(fs.access(path.join(readableBranchStorePath(remoteGitRoot), "branches", "other", "config", ".env.dev")));
+    assert.equal(await fs.readFile(otherBranchFile, "utf8"), "OTHER=1\n");
+    await assertCurrentBranchMetadata(readableBranchStorePath(remoteGitRoot));
   });
 
   it("resumes partial migration without reviving deleted legacy files", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-migration-resume-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const legacyBranchRoot = path.join(remoteGitRoot, "projects", "github.com", "team", "app", "branches", "main");
-    const branchRoot = hashedBranchStorePath(remoteGitRoot);
+    const legacyBranchRoot = hashedBranchStorePath(remoteGitRoot, createContext(workspacePath));
+    const branchRoot = readableBranchStorePath(remoteGitRoot);
 
     await fs.mkdir(workspacePath, { recursive: true });
     await fs.mkdir(legacyBranchRoot, { recursive: true });
     await fs.mkdir(branchRoot, { recursive: true });
+    await fs.writeFile(path.join(legacyBranchRoot, "env-sync-branch.json"), "{\"version\":1}\n");
     await fs.writeFile(path.join(legacyBranchRoot, ".env.one"), "ONE=1\n");
     await fs.writeFile(path.join(legacyBranchRoot, ".env.two"), "TWO=1\n");
     await fs.writeFile(path.join(branchRoot, ".env.one"), "ONE=1\n");
@@ -462,7 +541,7 @@ describe("EnvSyncEngine", () => {
 
     assert.deepEqual(openResult.pulledPaths, [".env.one", ".env.two"]);
     assert.equal(await fs.readFile(path.join(branchRoot, ".env.two"), "utf8"), "TWO=1\n");
-    assert.equal(await fs.readFile(path.join(branchRoot, "env-sync-branch.json"), "utf8"), "{\"version\":1}\n");
+    await assertCurrentBranchMetadata(branchRoot);
 
     await fs.unlink(path.join(workspacePath, ".env.two"));
     await fs.unlink(path.join(branchRoot, ".env.two"));
@@ -475,7 +554,7 @@ describe("EnvSyncEngine", () => {
   it("pulls another device's additions while pushing a different local change", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-multi-device-"));
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const workspaceA = path.join(root, "workspace-a");
     const workspaceB = path.join(root, "workspace-b");
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
@@ -519,7 +598,7 @@ describe("EnvSyncEngine", () => {
   it("deletes remotely only when a baseline proves the file was locally deleted", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-tracked-delete-"));
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const workspacePath = path.join(root, "workspace");
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const context = createContext(workspacePath);
@@ -547,7 +626,7 @@ describe("EnvSyncEngine", () => {
   it("keeps a skipped conflict during later background syncs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-skip-conflict-"));
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const workspacePath = path.join(root, "workspace");
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const context = createContext(workspacePath);
@@ -575,7 +654,7 @@ describe("EnvSyncEngine", () => {
   it("advances the baseline only after the config commit succeeds", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-state-retry-"));
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const workspacePath = path.join(root, "workspace");
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const context = createContext(workspacePath);
@@ -607,7 +686,7 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-upload-delete-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const context = createContext(workspacePath);
     const stateStore = new SyncStateStore(path.join(root, "state"));
@@ -627,7 +706,7 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-pull-delete-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const context = createContext(workspacePath);
     const stateStore = new SyncStateStore(path.join(root, "state"));
@@ -643,11 +722,11 @@ describe("EnvSyncEngine", () => {
     await assert.rejects(fs.access(path.join(workspacePath, ".env")));
   });
 
-  it("keeps the old baseline when remote writes are not committed", async () => {
+  it("keeps the old baseline when committing remote writes fails", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-uncommitted-state-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const context = createContext(workspacePath);
     const stateStore = new SyncStateStore(path.join(root, "state"));
@@ -657,9 +736,10 @@ describe("EnvSyncEngine", () => {
     await fs.writeFile(path.join(remoteStorePath, ".env"), "OLD=1\n");
     await fs.writeFile(path.join(workspacePath, ".env"), "NEW=1\n");
     await stateStore.write(settings, context, new Map([[".env", oldHash]]));
-    const engine = new EnvSyncEngine(createConfigRepoManager(remoteGitRoot, () => false), new StaticPrompts("upload", "upload"), new InMemoryLogger(), stateStore);
+    const manager = createConfigRepoManager(remoteGitRoot, () => { throw new Error("commit failed"); });
+    const engine = new EnvSyncEngine(manager, new StaticPrompts("upload", "upload"), new InMemoryLogger(), stateStore);
 
-    await assert.rejects(engine.syncLocalChanges(settings, context), /未能提交/);
+    await assert.rejects(engine.syncLocalChanges(settings, context), /commit failed/);
     assert.deepEqual(await stateStore.read(settings, context), new Map([[".env", oldHash]]));
   });
 
@@ -667,7 +747,7 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-observer-order-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const context = createContext(workspacePath);
     await initializeBranchStore(remoteStorePath);
@@ -686,14 +766,14 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-branch-roundtrip-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteA = hashedBranchStorePath(remoteGitRoot);
-    const remoteB = hashedBranchStorePath(remoteGitRoot, "feature");
+    const remoteA = readableBranchStorePath(remoteGitRoot);
+    const remoteB = readableBranchStorePath(remoteGitRoot, "feature");
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const contextA = createContext(workspacePath);
     const contextB = { ...contextA, branch: "feature" };
     const stateStore = new SyncStateStore(path.join(root, "state"));
     await initializeBranchStore(remoteA);
-    await initializeBranchStore(remoteB);
+    await initializeBranchStore(remoteB, "feature");
     await fs.mkdir(workspacePath, { recursive: true });
     await fs.writeFile(path.join(remoteA, ".env"), "A=1\n");
     await fs.writeFile(path.join(remoteB, ".env"), "B=1\n");
@@ -713,14 +793,14 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-branch-skip-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteA = hashedBranchStorePath(remoteGitRoot);
-    const remoteB = hashedBranchStorePath(remoteGitRoot, "feature");
+    const remoteA = readableBranchStorePath(remoteGitRoot);
+    const remoteB = readableBranchStorePath(remoteGitRoot, "feature");
     const settings = { repoUrl: "git@github.com:team/env-config.git", branch: "main" };
     const contextA = createContext(workspacePath);
     const contextB = { ...contextA, branch: "feature" };
     const stateStore = new SyncStateStore(path.join(root, "state"));
     await initializeBranchStore(remoteA);
-    await initializeBranchStore(remoteB);
+    await initializeBranchStore(remoteB, "feature");
     await fs.mkdir(workspacePath, { recursive: true });
     await fs.writeFile(path.join(remoteA, ".env"), "A=1\n");
     await fs.writeFile(path.join(remoteB, ".env"), "B=1\n");
@@ -743,7 +823,7 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-scan-ignore-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     await fs.mkdir(path.join(workspacePath, "ignored"), { recursive: true });
     await fs.mkdir(path.join(workspacePath, "nested"), { recursive: true });
     await fs.writeFile(path.join(workspacePath, "ignored", ".env.secret"), "IGNORED=1\n");
@@ -767,7 +847,7 @@ describe("EnvSyncEngine", () => {
     assert.equal(await fs.readFile(path.join(remoteStorePath, ".env.local"), "utf8"), "LOCAL=1\n");
     await assert.rejects(fs.access(path.join(remoteStorePath, "ignored", ".env.secret")));
     await assert.rejects(fs.access(path.join(remoteStorePath, "nested", ".env.nested")));
-    assert.equal(await fs.readFile(path.join(remoteStorePath, "env-sync-branch.json"), "utf8"), "{\"version\":1}\n");
+    await assertCurrentBranchMetadata(remoteStorePath);
   });
 
   it("pushes env changes when a project contains many non-matching files", async function () {
@@ -775,7 +855,7 @@ describe("EnvSyncEngine", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-many-files-"));
     const workspacePath = path.join(root, "workspace");
     const remoteGitRoot = path.join(root, "remote");
-    const remoteStorePath = hashedBranchStorePath(remoteGitRoot);
+    const remoteStorePath = readableBranchStorePath(remoteGitRoot);
     const dependenciesPath = path.join(workspacePath, "dependencies");
 
     try {

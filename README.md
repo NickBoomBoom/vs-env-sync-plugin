@@ -21,22 +21,38 @@ Use it when you want a single private repo to back up, share, and restore `.env`
 
 Env Sync scans the current workspace folder for Git projects up to a configurable depth and reads each discovered project's `remote.origin.url` and current branch. Project identities preserve the full group path, such as `gitlab.com/group/subgroup/app`, so nested GitLab groups cannot collide.
 
-Current branch data is isolated with SHA-256 hashes of the full project path and branch name:
+Starting with **0.3.0**, ordinary project and branch names are readable again. For `github.com/NickBoomBoom/electron-ai-switch` on business branch `v3`, the exact directory is:
+
+```text
+projects/github.com/NickBoomBoom/electron-ai-switch/branches/v3
+```
+
+This directory is on the **config repository's Git branch**, normally `main`. The business branch is a directory; the extension does not create a config-repository Git branch named `v3`.
+
+Full nested group paths are preserved. Safe lowercase branch names such as `main` and `v3` remain unchanged; `/` becomes `%2F`, a literal `%` becomes `%25`, and other special characters use UTF-8 percent encoding. Uppercase branch names such as `Feature`, Windows-reserved names, and long names keep a readable prefix followed by `~` and a 16-hex-character hash. GitHub project names retain the original `origin` casing; potentially case-sensitive hosts protect mixed-case project components with a readable prefix and hash suffix. Extremely long/deep project paths use a `~project-<readable-prefix>~<hash>` fallback. The identity marker records the real project and branch. See [Storage layout and migration design](docs/STORAGE.md) for precise rules and examples.
+
+### Upgrade from 0.2.2–0.2.7
+
+Those historical releases used pure-hash directories:
 
 ```text
 projects/<host>/<project-path-hash>/branches/<branch-name-hash>/
 ```
 
-These directories prevent collisions between nested groups, branch names with different case, and case-insensitive file systems. Logs and prompts still use readable origin and branch names.
+**Old directories are preserved, not deleted.** A complete hash branch snapshot is preferred and copied as a whole; missing files are not supplemented from an older shared directory because their absence may represent a deletion. A version-1 marker in an existing readable directory does not bypass this hash-source check. Different contents at the same path or target-only files require a separate modal choice before migration: adopt the source snapshot, retain the readable target without merging, or cancel this sync without advancing its baseline. When adopting a conflicting source, the old target is archived inside `.env-sync-archive` before its active files are replaced; the old source remains unchanged. Archives contain env secrets, are committed with that branch directory, and are excluded from active scanning.
 
-For backward compatibility, matching files are inherited from the legacy branch directory `projects/<host>/<owner>/<repo>/branches/<encoded-branch>/` or the older shared project directory. An initialization marker makes interrupted migrations resumable. Once initialization completes, legacy directories are no longer read, so deleted files are not revived and legacy files remain unchanged. Projects in detached HEAD state are skipped because no branch name is available.
+Migration uses a resumable `env-sync-migration.json` journal and writes the final version-2 / `readable-v2` identity marker last. A changed source during retry, an identity mismatch, or a redirected/symlink path stops migration. Ambiguous older nested-group owner/repo layouts require source confirmation. Only an equivalent complete hash snapshot can retain the existing baseline; retaining a target different from the hash snapshot, or adopting an older/incomplete legacy source, uses `baselineGeneration` isolation. State is saved only after successful commit/push handling. The design document explains conflict selection, recovery, and baseline rules.
+
+After installing 0.3.0 and reloading VS Code, open the desired project, switch to the desired business branch, and run **Env Sync：立即重新同步**. This migrates the current branches of projects discovered in the open workspace; it does **not** bulk-migrate every unopened project or every unselected branch. Review any migration prompt before proceeding, then browse the readable path on the config repository's `main` branch (or your configured branch).
+
+Upgrade **all clients** sharing the config repository. Once a branch has a completed readable-v2 marker, the readable directory is authoritative: old source changes only produce a warning and are never automatically merged or mirrored back. Old directories remain for reference, not as a second source of truth; completed migration does not re-import them or revive deleted files. Projects in detached HEAD state are skipped because no business branch name is available.
 
 ## Sync Behavior
 
 On workspace open:
 
 - Search for Git projects under the current workspace folder and resolve their current branches
-- Resolve the current branch again before every sync and initialize missing branch stores with resumable legacy migration
+- Resolve the current branch again before every sync, prepare its readable store, and safely resume migration of hash/legacy snapshots when needed
 - Keep a per-device baseline of successfully synchronized files and compare local, remote, and baseline state
 - Remote-only additions or edits are pulled; remote-only deletions remove the local file
 - Local-only additions or edits are uploaded; a remote file is deleted only when the baseline proves it was deleted locally
@@ -68,6 +84,31 @@ Common Git failures are classified into clearer messages, including:
 - push rejected by the remote
 - rebase or merge conflict
 - Git executable unavailable
+
+## Diagnose And Repair Commands
+
+Available from 0.2.5. Open the Command Palette (`Ctrl+Shift+P`, or `Cmd+Shift+P` on macOS) and search for `Env Sync`:
+
+| Command ID | Command Palette title | Purpose |
+| --- | --- | --- |
+| `envSync.diagnoseConfigRepo` | Env Sync：诊断配置仓库 | Show the managed cache path, branch, working tree status, stashes and rebase state in the output channel. Does not access the network, clone, or modify the repository. |
+| `envSync.repairConfigRepo` | Env Sync：修复未完成的 rebase | Repair only the extension's cached config repository, not business project repositories. After confirmation, create a full backup before aborting an unfinished rebase. Make no changes if no rebase is present. |
+| `envSync.syncNow` | Env Sync：立即重新同步 | Rerun workspace sync. This can pull, commit and push env files; it is not read-only. |
+| `envSync.showOutput` | Env Sync：显示输出 | View diagnostics, errors and backup paths. |
+| `envSync.openConfigRepo` | Env Sync：打开配置仓库目录 | Reveal the managed cache on the extension-host machine for manual inspection; does not open or change business project repositories. |
+
+Repair workflow and safety boundaries:
+
+1. Inspect the extension-owned config cache. If no unfinished rebase exists, leave the repository unchanged.
+2. Explain the effects in a confirmation dialog. Cancellation does not create a backup or abort the rebase.
+3. Make a complete backup under `repair-backups` in the same extension `globalStorage`, including `.git` and ignored/untracked env files. If backup fails, do not abort. Backups may contain env secrets: keep them secure.
+4. Only after a successful backup, run `git rebase --abort`; never delete the rebase state directory. Do not automatically pop stashes, force-push, or reset. Aborting discards the current rebase and its conflict-resolution progress.
+5. If abort fails, retain the backup and inspect the output channel for the error and backup path. Do not delete the rebase directory manually.
+6. After success, let the user choose “立即重新同步” rather than silently starting sync. Actual content conflicts can recur and still require manual resolution; retained stashes are not restored automatically.
+
+For an existing `rebase-merge` directory, diagnose first, confirm backup and repair, review retained stashes, then choose whether to retry sync.
+
+If 0.2.5 reports “配置仓库未能提交本轮 env 变更” even though diagnostics show no rebase and a clean working tree, upgrade to 0.2.6 and retry sync; another rebase repair is not needed. Git normalization (such as `core.autocrlf=true`) can leave no staged differences after an env write: this is a successful no-op, not a failed commit. Real Git failures still stop sync without advancing the baseline. Upgrading does not restore or remove existing stashes.
 
 ## Requirements
 
@@ -417,8 +458,8 @@ Open the test project in the extension host, initialize the config repo, and val
 - Virtual workspaces are not supported
 - The extension does not create the GitHub repository for you
 - The extension does not encrypt secrets before commit
-- Project mapping uses hash directories derived from the full origin and current branch; the storage layout is not customizable
-- Older extension versions can still read the preserved legacy shared files, but cannot read branch-specific data
+- Storage uses the readable-v2 naming and collision-protection rules described in [the storage design](docs/STORAGE.md); arbitrary custom layouts are not supported
+- Preserved hash/legacy directories are historical snapshots after migration, not a bidirectional mirror; upgrade all clients before relying on readable-v2 data
 
 ## Release Notes
 

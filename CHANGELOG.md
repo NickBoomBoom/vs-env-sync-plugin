@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.0
+
+- Restored readable storage paths, e.g. `projects/github.com/NickBoomBoom/electron-ai-switch/branches/v3`, with safe escaping/suffixes only where needed for cross-platform names.
+- Preserved complete nested project paths and real identities in versioned branch metadata.
+- Added copy-first migration from prior hashed/legacy snapshots, preserving old sources and preventing deleted files from being revived.
+- Required explicit choices for conflicting snapshots; archive old target data before replacement, journal interrupted migrations, and validate archive/source integrity before retries.
+- Isolated incompatible old baselines after a snapshot choice and kept state updates behind successful commit/push.
+- Refused redirected storage paths and active env symlinks to protect external files; documented whole-client upgrade requirements.
+
+## 0.2.7
+
+- Always log successful sync completion, including no-change checks, instead of leaving only a start message in the output channel.
+- Show the project branch, config-repository branch, exact hashed storage path, and local/remote matching file counts.
+- Warn when no local env files match or files were skipped, without logging env contents; do not emit completion on failure.
+
+## 0.2.6
+
+- Fixed successful no-op env synchronizations being reported as failed commits when Git normalizes line endings or clean filters remove staged differences.
+- Kept real staging, diff, commit and push errors fatal so failed syncs cannot advance the baseline.
+- Added real Git regressions for Windows CRLF/LF no-op commits and commit/push failure recovery without touching retained stashes.
+
+## 0.2.5
+
+- Added Command Palette entries to diagnose the managed config cache, reveal its directory, retry synchronization, and view logs.
+- Added explicit confirmation and a full local backup before aborting an unfinished config-repository rebase; preserved stashes and reported backup paths on failure.
+- Added diagnostic and repair actions to sync error notifications, with guards for absent caches and redirected Git worktrees.
+- Prevented a failed automatic rebase from leaving a newly started operation unfinished where Git can abort safely.
+
+## 0.2.4
+
+- Enabled long paths for dedicated config repositories on Windows, including initial clone checkout and later rebase operations.
+
 ## 0.2.3
 
 - Fixed rebase failures and prevented local data loss when the remote starts tracking previously untracked or ignored env files.

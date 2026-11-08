@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,11 +8,11 @@ import { EnvSyncEngine } from "../src/core/envSyncEngine";
 import { GitCli, GitCommandError } from "../src/core/git";
 import { compilePathRegexes } from "../src/core/pathRegex";
 import { SyncStateStore } from "../src/core/syncStateStore";
+import { branchDirectoryName, hashedBranchStorePath } from "../src/core/storagePaths";
 import { Logger, SyncPrompts, WorkspaceSyncContext } from "../src/core/types";
 
-function hashedBranchFile(branch: string, ...relativePaths: string[]): string {
-  const hash = (value: string) => createHash("sha256").update(`v1:${value}`).digest("hex");
-  return path.join("projects", "github.com", hash("team/app"), "branches", hash(branch), ...relativePaths);
+function readableBranchFile(branch: string, ...relativePaths: string[]): string {
+  return path.join("projects", "github.com", "team", "app", "branches", branchDirectoryName(branch), ...relativePaths);
 }
 
 class TestLogger implements Logger {
@@ -88,7 +87,7 @@ describe("git integration", () => {
     await createInitialCommit(
       seedClone,
       gitCli,
-      hashedBranchFile("main", ".env.local"),
+      readableBranchFile("main", ".env.local"),
       "REMOTE=1\n"
     );
 
@@ -128,7 +127,7 @@ describe("git integration", () => {
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
     await git(gitCli, verifyClone, "checkout", "main");
     assert.equal(
-      await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env.local")), "utf8"),
+      await fs.readFile(path.join(verifyClone, readableBranchFile("main", ".env.local")), "utf8"),
       "REMOTE=2\n"
     );
   });
@@ -159,7 +158,7 @@ describe("git integration", () => {
 
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
     const legacyFile = path.join(verifyClone, "projects", "github.com", "team", "app", ".env.local");
-    const branchFile = path.join(verifyClone, hashedBranchFile("main", ".env.local"));
+    const branchFile = path.join(verifyClone, readableBranchFile("main", ".env.local"));
     assert.equal(await fs.readFile(legacyFile, "utf8"), "SHARED=1\n");
     assert.equal(await fs.readFile(branchFile, "utf8"), "SHARED=1\n");
   });
@@ -212,7 +211,7 @@ describe("git integration", () => {
     );
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
     assert.equal(
-      await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env")), "utf8"),
+      await fs.readFile(path.join(verifyClone, readableBranchFile("main", ".env")), "utf8"),
       "LOCAL=2\n"
     );
   });
@@ -227,7 +226,7 @@ describe("git integration", () => {
     const repo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "main" });
     await git(gitCli, repo.repoPath, "config", "user.email", "test@example.com");
     await git(gitCli, repo.repoPath, "config", "user.name", "Test User");
-    const branchFile = hashedBranchFile("main", ".env");
+    const branchFile = readableBranchFile("main", ".env");
     await fs.mkdir(path.dirname(path.join(repo.repoPath, branchFile)), { recursive: true });
     await fs.writeFile(path.join(repo.repoPath, branchFile), "CURRENT=1\n");
     await fs.writeFile(path.join(repo.repoPath, "other.txt"), "OTHER=1\n");
@@ -374,7 +373,7 @@ describe("git integration", () => {
     await engine.syncLocalChanges({ repoUrl: bareConfigRepo, branch: "main" }, createContext(workspacePath));
 
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
-    assert.equal(await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env")), "utf8"), "LOCAL=1\n");
+    assert.equal(await fs.readFile(path.join(verifyClone, readableBranchFile("main", ".env")), "utf8"), "LOCAL=1\n");
   });
 
   it("serializes concurrent managers sharing one config clone", async () => {
@@ -410,8 +409,8 @@ describe("git integration", () => {
     ]);
 
     const verifyClone = await cloneRepo(root, bareConfigRepo, "config-verify", gitCli);
-    assert.equal(await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env.a")), "utf8"), "A=1\n");
-    assert.equal(await fs.readFile(path.join(verifyClone, hashedBranchFile("main", ".env.b")), "utf8"), "B=1\n");
+    assert.equal(await fs.readFile(path.join(verifyClone, readableBranchFile("main", ".env.a")), "utf8"), "A=1\n");
+    assert.equal(await fs.readFile(path.join(verifyClone, readableBranchFile("main", ".env.b")), "utf8"), "B=1\n");
   });
 
   it("preserves untracked and ignored files when the remote starts tracking their paths", async () => {
@@ -445,6 +444,29 @@ describe("git integration", () => {
     assert.equal((await fs.readFile(path.join(repo.repoPath, ".env"), "utf8")).replace(/\r\n/g, "\n"), "LOCAL=2\n");
     assert.equal((await fs.readFile(path.join(repo.repoPath, "nested", ".env.example"), "utf8")).replace(/\r\n/g, "\n"), "SHARED=1\n");
     assert.equal(await git(gitCli, repo.repoPath, "stash", "list"), "");
+  });
+
+  it("rebases remote additions at long legacy hashed paths", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-git-long-path-"));
+    const gitCli = new GitCli();
+    const bareConfigRepo = await createBareRepo(root, "config.git", gitCli);
+    const seedClone = await cloneRepo(root, bareConfigRepo, "config-seed", gitCli);
+    await createInitialCommit(seedClone, gitCli, "README.md", "BASE=1\n");
+    const manager = new ConfigRepoManager(path.join(root, "storage"), gitCli, new TestLogger());
+    const repo = await manager.ensureReady({ repoUrl: bareConfigRepo, branch: "main" });
+    const remoteFile = path.join(path.relative(seedClone, hashedBranchStorePath(seedClone, createContext(seedClone))), ".env");
+    await fs.mkdir(path.dirname(path.join(seedClone, remoteFile)), { recursive: true });
+    await fs.writeFile(path.join(seedClone, remoteFile), "REMOTE=1\n");
+    await git(gitCli, seedClone, "add", "-A");
+    await git(gitCli, seedClone, "commit", "-m", "add hashed env");
+    await git(gitCli, seedClone, "push");
+
+    await manager.refresh(repo);
+
+    assert.equal((await fs.readFile(path.join(repo.repoPath, remoteFile), "utf8")).replace(/\r\n/g, "\n"), "REMOTE=1\n");
+    if (process.platform === "win32") {
+      assert.equal(await git(gitCli, repo.repoPath, "config", "--get", "core.longpaths"), "true");
+    }
   });
 
   it("rebases onto the configured branch when a concurrent fetch writes multiple branches", async () => {

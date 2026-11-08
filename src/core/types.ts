@@ -59,7 +59,15 @@ export interface LocalWriteObserver {
 export type LocalOnlyDecision = "upload" | "skip";
 export type ConflictDecision = "pull" | "upload" | "skip";
 
+export interface StorageMigrationChoice {
+  sourcePath: string;
+  targetPath: string;
+  conflictingPaths: string[];
+  reason: "conflicting-snapshots" | "ambiguous-legacy";
+}
+
 export interface SyncPrompts {
+  chooseStorageMigration?(context: WorkspaceSyncContext, details: StorageMigrationChoice): Promise<"source" | "target" | "cancel">;
   chooseLocalOnly(context: WorkspaceSyncContext, relativePath: string): Promise<LocalOnlyDecision>;
   chooseConflict(
     context: WorkspaceSyncContext,

@@ -7,18 +7,20 @@ import { ConfigRepoSettings, WorkspaceSyncContext } from "./types";
 interface SyncState {
   version: 1;
   files: Record<string, string>;
+  storageGeneration?: string;
 }
 
 interface LastContext {
   repoBranch: string;
   projectBranch: string;
   pending?: boolean;
+  storageGeneration?: string;
 }
 
 export class SyncStateStore {
   constructor(private readonly baseStoragePath: string) {}
 
-  async read(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<Map<string, string>> {
+  async read(settings: ConfigRepoSettings, context: WorkspaceSyncContext, storageGeneration?: string): Promise<Map<string, string>> {
     const statePath = await this.statePath(settings, context);
     let source: string;
     try {
@@ -38,20 +40,22 @@ export class SyncStateStore {
       if (Object.values(state.files).some((value) => typeof value !== "string")) {
         throw new Error("invalid file hash");
       }
+      if (storageGeneration !== undefined && state.storageGeneration !== storageGeneration) return new Map();
       return new Map(Object.entries(state.files));
     } catch (error) {
       throw new Error(`无法读取同步状态 ${statePath}：${(error as Error).message}`);
     }
   }
 
-  async hasContextChanged(settings: ConfigRepoSettings, context: WorkspaceSyncContext): Promise<boolean> {
+  async hasContextChanged(settings: ConfigRepoSettings, context: WorkspaceSyncContext, storageGeneration?: string): Promise<boolean> {
     const contextPath = await this.lastContextPath(settings, context);
     try {
       const last = JSON.parse(await fs.readFile(contextPath, "utf8")) as LastContext;
-      return last.pending === true || last.repoBranch !== settings.branch || last.projectBranch !== context.branch;
+      return last.pending === true || last.repoBranch !== settings.branch || last.projectBranch !== context.branch ||
+        (storageGeneration !== undefined && last.storageGeneration !== storageGeneration);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return false;
+        return storageGeneration !== undefined;
       }
       throw new Error(`无法读取分支同步上下文 ${contextPath}：${(error as Error).message}`);
     }
@@ -61,18 +65,21 @@ export class SyncStateStore {
     settings: ConfigRepoSettings,
     context: WorkspaceSyncContext,
     files: ReadonlyMap<string, string>,
-    updateContext = true
+    updateContext = true,
+    storageGeneration?: string
   ): Promise<void> {
     const statePath = await this.statePath(settings, context);
     const state: SyncState = {
       version: 1,
-      files: Object.fromEntries([...files.entries()].sort(([left], [right]) => left.localeCompare(right)))
+      files: Object.fromEntries([...files.entries()].sort(([left], [right]) => left.localeCompare(right))),
+      ...(storageGeneration !== undefined ? { storageGeneration } : {})
     };
     await this.writeJson(statePath, state);
     const lastContext: LastContext = {
       repoBranch: settings.branch,
       projectBranch: context.branch,
-      pending: !updateContext
+      pending: !updateContext,
+      ...(storageGeneration !== undefined ? { storageGeneration } : {})
     };
     await this.writeJson(await this.lastContextPath(settings, context), lastContext);
   }

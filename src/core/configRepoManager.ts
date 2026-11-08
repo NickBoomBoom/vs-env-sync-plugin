@@ -26,20 +26,29 @@ export class ConfigRepoManager {
     return this.fileLock.runExclusive(hashRemoteUrl(settings.repoUrl), task);
   }
 
+  getRepoPath(settings: ConfigRepoSettings): string {
+    return path.join(this.baseStoragePath, "config-repos", hashRemoteUrl(settings.repoUrl));
+  }
+
   async verifyRemote(settings: ConfigRepoSettings): Promise<void> {
     await this.git.verifyRemoteAccessible(settings.repoUrl);
   }
 
   async ensureReady(settings: ConfigRepoSettings): Promise<ReadyConfigRepo> {
-    const repoPath = path.join(this.baseStoragePath, "config-repos", hashRemoteUrl(settings.repoUrl));
+    const repoPath = this.getRepoPath(settings);
     await fs.mkdir(path.dirname(repoPath), { recursive: true });
     await this.git.ensureRepoClone(settings.repoUrl, repoPath);
+    if (process.platform === "win32") {
+      await this.git.run(["config", "core.longpaths", "true"], { cwd: repoPath });
+    }
+    await this.assertNoRebase(repoPath);
     await this.git.run(["fetch", "--prune", "origin"], { cwd: repoPath });
     await this.checkoutBranch(repoPath, settings.branch);
     return { repoPath, branch: settings.branch };
   }
 
   async refresh(repo: ReadyConfigRepo): Promise<void> {
+    await this.assertNoRebase(repo.repoPath);
     await this.checkoutBranch(repo.repoPath, repo.branch);
     await this.updateFromRemote(repo);
     if (await this.hasUnpushedCommits(repo)) {
@@ -47,28 +56,48 @@ export class ConfigRepoManager {
     }
   }
 
+  /** Returns whether a new commit was created; all staging/commit/push failures throw. */
   async commitProjectChanges(repo: ReadyConfigRepo, projectStorePath: string, message: string): Promise<boolean> {
     const relativeProjectPath = path.relative(repo.repoPath, projectStorePath) || ".";
     await this.git.run(["add", "-f", "-A", "--", relativeProjectPath], { cwd: repo.repoPath });
 
-    const hasChanges = await this.git.tryRun(["diff", "--cached", "--quiet", "--", relativeProjectPath], {
-      cwd: repo.repoPath
-    });
-    if (hasChanges === undefined) {
-      await this.git.run(["commit", "-m", message, "--", relativeProjectPath], { cwd: repo.repoPath });
-      await this.pushWithRecovery(repo);
-      return true;
+    try {
+      await this.git.run(["diff", "--cached", "--quiet", "--", relativeProjectPath], { cwd: repo.repoPath });
+      // Staging can normalize line endings/clean filters back to the existing tree.
+      // false means success without a new commit, not a failed commit.
+      return false;
+    } catch (error) {
+      // git diff --quiet: 1 means differences; other failures must remain visible.
+      if (!(error instanceof GitCommandError) || error.exitCode !== 1) {
+        throw error;
+      }
     }
 
-    return false;
+    await this.git.run(["commit", "-m", message, "--", relativeProjectPath], { cwd: repo.repoPath });
+    await this.pushWithRecovery(repo);
+    return true;
   }
 
   private async updateFromRemote(repo: ReadyConfigRepo): Promise<void> {
+    await this.assertNoRebase(repo.repoPath);
     await this.git.run(["fetch", "--prune", "origin"], { cwd: repo.repoPath });
     if (await this.hasRemoteBranch(repo.repoPath, repo.branch)) {
       const trackedStash = await this.stashChanges(repo.repoPath, false);
       const untrackedStash = await this.stashChanges(repo.repoPath, true);
-      await this.git.run(["rebase", `origin/${repo.branch}`], { cwd: repo.repoPath });
+      try {
+        await this.git.run(["rebase", `origin/${repo.branch}`], { cwd: repo.repoPath });
+      } catch (error) {
+        // Only abort a rebase started by this invocation; never discard an existing operation.
+        if (await this.hasRebase(repo.repoPath)) {
+          try {
+            await this.git.run(["rebase", "--abort"], { cwd: repo.repoPath });
+          } catch {
+            this.logger.warn(`无法撤销本次 rebase，请先备份并检查配置仓库：${repo.repoPath}`);
+          }
+        }
+        this.logger.warn(`拉取失败，本地提交及 stash 已保留。配置仓库：${repo.repoPath}；tracked stash: ${trackedStash ?? "无"}；untracked stash: ${untrackedStash ?? "无"}`);
+        throw error;
+      }
       if (untrackedStash) {
         await this.git.run(["restore", `--source=${untrackedStash}^3`, "--worktree", "--", "."], {
           cwd: repo.repoPath
@@ -81,6 +110,37 @@ export class ConfigRepoManager {
       return;
     }
     this.logger.info(`远端分支 ${repo.branch} 暂不存在，已跳过拉取。`);
+  }
+
+  private async hasRebase(repoPath: string): Promise<boolean> {
+    return (await this.getRebaseState(repoPath)) !== undefined;
+  }
+
+  async getRebaseState(repoPath: string): Promise<"rebase-merge" | "rebase-apply" | undefined> {
+    for (const state of ["rebase-merge", "rebase-apply"] as const) {
+      const statePath = await this.git.run(["rev-parse", "--git-path", state], { cwd: repoPath });
+      try {
+        await fs.stat(path.resolve(repoPath, statePath));
+        return state;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private async assertNoRebase(repoPath: string): Promise<void> {
+    if (await this.hasRebase(repoPath)) {
+      throw new Error(
+        `配置仓库存在未完成的 rebase，已停止同步并保留现场。配置仓库路径：${repoPath}。` +
+        `可从命令面板运行“Env Sync：诊断配置仓库”或“Env Sync：修复未完成的 rebase”。` +
+        `如需手动处理，请先备份该目录（包含 .git），再在该目录运行 git status 和 git stash list；` +
+        `需要保留当前变基时手动解决冲突并 git rebase --continue，` +
+        `确认放弃本次变基时运行 git rebase --abort。不要直接删除 .git/rebase-merge 或 .git/rebase-apply。`
+      );
+    }
   }
 
   private async stashChanges(repoPath: string, includeAll: boolean): Promise<string | undefined> {

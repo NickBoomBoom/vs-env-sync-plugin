@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { ConfigRepoManager, ReadyConfigRepo } from "./configRepoManager";
-import { pathExists, readMatchingFiles, removeFileIfExists, writeFileEnsuringDir, pruneEmptyDirectories } from "./fileStore";
-import { assertPathInside, branchMetadataPath, branchStorePath } from "./storagePaths";
+import { readMatchingFiles, removeFileIfExists, writeFileEnsuringDir, pruneEmptyDirectories } from "./fileStore";
+import { assertPathInside, branchStorePath } from "./storagePaths";
+import { assertSafePath, prepareReadableBranchStore } from "./storageMigration";
 import { SyncStateStore } from "./syncStateStore";
 import { decideThreeWay, ThreeWayTrigger } from "./threeWaySync";
 import {
@@ -18,46 +19,6 @@ import {
 
 interface InternalSyncResult extends PushSyncResult {
   uploadedPaths: string[];
-}
-
-function legacyProjectStorePath(repoPath: string, context: WorkspaceSyncContext): string {
-  const target = path.join(repoPath, "projects", context.project.host, context.project.owner, context.project.repo);
-  assertPathInside(repoPath, target);
-  return target;
-}
-
-function legacyBranchStorePath(repoPath: string, context: WorkspaceSyncContext): string {
-  return path.join(legacyProjectStorePath(repoPath, context), "branches", encodeURIComponent(context.branch));
-}
-
-async function prepareBranchStore(
-  repo: ReadyConfigRepo,
-  context: WorkspaceSyncContext
-): Promise<{ remoteRoot: string; inherited: boolean }> {
-  const remoteRoot = branchStorePath(repo.repoPath, context);
-  const metadataPath = branchMetadataPath(repo.repoPath, context);
-  if (await pathExists(metadataPath)) {
-    return { remoteRoot, inherited: false };
-  }
-
-  const legacyRoot = legacyProjectStorePath(repo.repoPath, context);
-  const sources = [
-    { root: legacyBranchStorePath(repo.repoPath, context), ignoredRoots: context.ignoredProjectRoots },
-    { root: legacyRoot, ignoredRoots: [...context.ignoredProjectRoots, "branches"] }
-  ];
-  for (const source of sources) {
-    const legacyFiles = await readMatchingFiles(source.root, context.pathRegexes, source.ignoredRoots, context.ignoredDirectoryNames);
-    for (const [relativePath, content] of legacyFiles) {
-      const targetPath = path.join(remoteRoot, relativePath);
-      assertPathInside(remoteRoot, targetPath);
-      if (!(await pathExists(targetPath))) {
-        await writeFileEnsuringDir(targetPath, content);
-      }
-    }
-  }
-
-  await writeFileEnsuringDir(metadataPath, Buffer.from("{\"version\":1}\n"));
-  return { remoteRoot, inherited: true };
 }
 
 function commitMessage(context: WorkspaceSyncContext): string {
@@ -134,11 +95,17 @@ export class EnvSyncEngine {
     trigger: ThreeWayTrigger,
     observer?: LocalWriteObserver
   ): Promise<InternalSyncResult> {
-    const { remoteRoot, inherited } = await prepareBranchStore(repo, context);
+    const storePath = path.relative(repo.repoPath, branchStorePath(repo.repoPath, context)).split(path.sep).join("/");
+    this.logger.info(`同步目标：${context.project.slug} [${context.branch}] → 配置仓库分支 ${repo.branch}；存储目录：${storePath}`);
+    const { remoteRoot, inherited, baselineGeneration } = await prepareReadableBranchStore(repo, context, this.prompts, this.logger);
     const localFiles = await readMatchingFiles(context.workspacePath, context.pathRegexes, context.ignoredProjectRoots, context.ignoredDirectoryNames);
-    const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes, context.ignoredProjectRoots, context.ignoredDirectoryNames);
-    const baseline = this.stateStore ? await this.stateStore.read(settings, context) : new Map<string, string>();
-    const contextChanged = this.stateStore ? await this.stateStore.hasContextChanged(settings, context) : false;
+    const remoteFiles = await readMatchingFiles(remoteRoot, context.pathRegexes, context.ignoredProjectRoots, context.ignoredDirectoryNames, true);
+    this.logger.info(`匹配文件：本地 ${localFiles.size} 个，配置仓库 ${remoteFiles.size} 个；规则：${context.pathRegexSources.join("、")}`);
+    if (localFiles.size === 0) {
+      this.logger.warn(`本地没有匹配的 env 文件：${context.workspacePath}；请检查文件位置、匹配规则及排除目录。`);
+    }
+    const baseline = this.stateStore ? await this.stateStore.read(settings, context, baselineGeneration) : new Map<string, string>();
+    const contextChanged = this.stateStore ? await this.stateStore.hasContextChanged(settings, context, baselineGeneration) : false;
     const decisionTrigger = contextChanged ? "open" : trigger;
     const nextBaseline = new Map(baseline);
     const allPaths = new Set<string>([...localFiles.keys(), ...remoteFiles.keys(), ...baseline.keys()]);
@@ -177,6 +144,7 @@ export class EnvSyncEngine {
 
       if (decision === "pull" && remoteContent) {
         observer?.expectWrite(localTargetPath, remoteContent);
+        await assertSafePath(context.workspacePath, localTargetPath);
         await writeFileEnsuringDir(localTargetPath, remoteContent);
         result.pulledPaths.push(relativePath);
         updateBaseline(nextBaseline, relativePath, remoteHash);
@@ -185,6 +153,7 @@ export class EnvSyncEngine {
 
       if (decision === "delete-local") {
         observer?.expectDelete(localTargetPath);
+        await assertSafePath(context.workspacePath, localTargetPath);
         await removeFileIfExists(localTargetPath);
         await pruneEmptyDirectories(context.workspacePath, localTargetPath);
         result.deletedLocalPaths.push(relativePath);
@@ -193,6 +162,7 @@ export class EnvSyncEngine {
       }
 
       if (decision === "push" && localContent) {
+        await assertSafePath(repo.repoPath, remoteTargetPath);
         await writeFileEnsuringDir(remoteTargetPath, localContent);
         if (trigger === "open") {
           result.uploadedPaths.push(relativePath);
@@ -204,6 +174,7 @@ export class EnvSyncEngine {
       }
 
       if (decision === "delete-remote") {
+        await assertSafePath(repo.repoPath, remoteTargetPath);
         await removeFileIfExists(remoteTargetPath);
         await pruneEmptyDirectories(remoteRoot, remoteTargetPath);
         result.deletedPaths.push(relativePath);
@@ -222,6 +193,7 @@ export class EnvSyncEngine {
 
       if (choice === "pull" && remoteContent) {
         observer?.expectWrite(localTargetPath, remoteContent);
+        await assertSafePath(context.workspacePath, localTargetPath);
         await writeFileEnsuringDir(localTargetPath, remoteContent);
         result.pulledPaths.push(relativePath);
         updateBaseline(nextBaseline, relativePath, remoteHash);
@@ -230,6 +202,7 @@ export class EnvSyncEngine {
 
       if (choice === "pull" && !remoteContent) {
         observer?.expectDelete(localTargetPath);
+        await assertSafePath(context.workspacePath, localTargetPath);
         await removeFileIfExists(localTargetPath);
         await pruneEmptyDirectories(context.workspacePath, localTargetPath);
         result.deletedLocalPaths.push(relativePath);
@@ -238,6 +211,7 @@ export class EnvSyncEngine {
       }
 
       if (choice === "upload" && localContent) {
+        await assertSafePath(repo.repoPath, remoteTargetPath);
         await writeFileEnsuringDir(remoteTargetPath, localContent);
         if (trigger === "open") {
           result.uploadedPaths.push(relativePath);
@@ -249,6 +223,7 @@ export class EnvSyncEngine {
       }
 
       if (choice === "upload" && !localContent) {
+        await assertSafePath(repo.repoPath, remoteTargetPath);
         await removeFileIfExists(remoteTargetPath);
         await pruneEmptyDirectories(remoteRoot, remoteTargetPath);
         result.deletedPaths.push(relativePath);
@@ -259,7 +234,7 @@ export class EnvSyncEngine {
     const hasRemoteChanges = inherited || result.uploadedPaths.length > 0 || result.pushedPaths.length > 0 || result.deletedPaths.length > 0;
     result.committed = await this.configRepoManager.commitProjectChanges(repo, remoteRoot, commitMessage(context));
     if (hasRemoteChanges && !result.committed) {
-      throw new Error("配置仓库未能提交本轮 env 变更，同步状态未更新。");
+      this.logger.info("配置仓库经 Git 暂存后无新增差异，无需新提交；本轮同步按成功更新状态。");
     }
     if (inherited) {
       this.logger.info(`已初始化 ${context.project.slug} 的分支 ${context.branch} 存储；已提交：${result.committed ? "是" : "否"}。`);
@@ -268,8 +243,19 @@ export class EnvSyncEngine {
       this.logger.info(`打开工作区同步已上传 ${result.uploadedPaths.length} 个文件；已提交：${result.committed ? "是" : "否"}。`);
     }
     if (this.stateStore) {
-      await this.stateStore.write(settings, context, nextBaseline, !(contextChanged && result.skippedPaths.length > 0));
+      await this.stateStore.write(settings, context, nextBaseline, !(contextChanged && result.skippedPaths.length > 0), baselineGeneration);
     }
+    if (result.skippedPaths.length > 0) {
+      const visiblePaths = result.skippedPaths.slice(0, 10).join("、");
+      this.logger.warn(`本轮跳过 ${result.skippedPaths.length} 个文件，尚未同步这些文件：${visiblePaths}${result.skippedPaths.length > 10 ? " 等" : ""}`);
+    }
+    const noChanges = !result.committed && !hasRemoteChanges && result.pulledPaths.length === 0 && result.deletedLocalPaths.length === 0 && result.skippedPaths.length === 0;
+    this.logger.info(
+      `同步检查完成：${context.project.slug} [${context.branch}]；` +
+      `更新配置仓库 ${result.uploadedPaths.length + result.pushedPaths.length} 个、删除配置仓库 ${result.deletedPaths.length} 个、` +
+      `拉取 ${result.pulledPaths.length} 个、删除本地 ${result.deletedLocalPaths.length} 个、跳过 ${result.skippedPaths.length} 个；` +
+      `新提交：${result.committed ? "是" : "否"}${noChanges ? (localFiles.size + remoteFiles.size > 0 ? "；无需变更，匹配文件已一致。" : "；没有匹配文件可同步。") : "。"}`
+    );
     return result;
   }
 }

@@ -2,7 +2,7 @@
   "name": "vs-env-sync-plugin",
   "displayName": "Git 项目 Env 同步",
   "description": "通过专用仓库自动拉取、导出并备份每个 Git 项目的 env 文件。",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "publisher": "NickBoomBoom",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
@@ -57,6 +57,26 @@
       {
         "command": "envSync.initializeConfigRepo",
         "title": "Env Sync：初始化配置仓库"
+      },
+      {
+        "command": "envSync.diagnoseConfigRepo",
+        "title": "Env Sync：诊断配置仓库"
+      },
+      {
+        "command": "envSync.repairConfigRepo",
+        "title": "Env Sync：修复未完成的 rebase"
+      },
+      {
+        "command": "envSync.openConfigRepo",
+        "title": "Env Sync：打开配置仓库目录"
+      },
+      {
+        "command": "envSync.syncNow",
+        "title": "Env Sync：立即重新同步"
+      },
+      {
+        "command": "envSync.showOutput",
+        "title": "Env Sync：显示输出"
       }
     ],
     "configuration": {

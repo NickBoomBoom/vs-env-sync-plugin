@@ -55,6 +55,30 @@ describe("SyncStateStore", () => {
     assert.equal((await fs.readdir(stateDirectory)).length, 1);
   });
 
+  it("isolates old baselines until the chosen storage generation succeeds", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-generation-"));
+    try {
+      const workspace = path.join(root, "workspace");
+      await fs.mkdir(workspace);
+      const store = new SyncStateStore(root);
+      const settings = { repoUrl: "https://github.com/team/config.git", branch: "main" };
+      const context = createContext(workspace);
+      assert.equal(await store.hasContextChanged(settings, context, "new-layout"), true);
+      await store.write(settings, context, new Map([[".env", "old-hash"]]));
+      assert.deepEqual(await store.read(settings, context, "new-layout"), new Map());
+      assert.equal(await store.hasContextChanged(settings, context, "new-layout"), true);
+      assert.deepEqual(await store.read(settings, context), new Map([[".env", "old-hash"]]), "checking a new generation must not mutate old state");
+      await store.write(settings, context, new Map([[".env", "confirmed-hash"]]), false, "new-layout");
+      assert.equal(await store.hasContextChanged(settings, context, "new-layout"), true, "skipped conflicts remain pending");
+      assert.deepEqual(await store.read(settings, context, "new-layout"), new Map([[".env", "confirmed-hash"]]));
+      await store.write(settings, context, new Map([[".env", "confirmed-hash"]]), true, "new-layout");
+      assert.equal(await store.hasContextChanged(settings, context, "new-layout"), false);
+      assert.equal(await store.hasContextChanged(settings, context, "another-layout"), true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reports corrupt state with its file path", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "env-sync-state-corrupt-"));
     const workspace = path.join(root, "workspace");
